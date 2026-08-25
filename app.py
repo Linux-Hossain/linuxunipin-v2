@@ -584,6 +584,17 @@ def send_callback(callback_url: str, payload: dict):
         print(f"[!] Callback Error to {callback_url}: {e}")
 
 
+def parse_codes_input(raw_code) -> list:
+    """
+    বিভিন্ন ফরম্যাটের (কমা-সেপারেটেড, নিউলাইন-সেপারেটেড, অথবা JSON লিস্ট) কোড ইনপুট ক্লিন পার্স করে।
+    """
+    if isinstance(raw_code, list):
+        return [str(c).strip() for c in raw_code if str(c).strip()]
+    if isinstance(raw_code, str):
+        return [c.strip() for c in re.split(r'[\n\r,]+', raw_code) if c.strip()]
+    return []
+
+
 # ─── API Routes ───────────────────────────────────────────────────────────────
 
 @app.route("/api/unipin", methods=["GET", "POST"])
@@ -598,7 +609,7 @@ def unipin_api():
         "orderid":   "ORD-001",          (optional)
         "uid":       "228197025",         (required)
         "packageId": "1",                 (required — 1-9)
-        "code":      "CODE1,CODE2",       (required — কমা দিয়ে max 5টি)
+        "code":      "CODE1,CODE2",       (required — কমা বা নিউলাইন দিয়ে max 5টি)
         "apiKey":    "linux-lx0199222"   (required)
     }
     """
@@ -624,8 +635,8 @@ def unipin_api():
             "message": "Missing required fields: uid, code"
         }), 400
 
-    # Codes পার্স (কমা দিয়ে আলাদা, max 5)
-    codes = [c.strip() for c in raw_code.split(",") if c.strip()]
+    # Codes পার্স (কমা, নিউলাইন বা লিস্ট ফরম্যাট, max 5)
+    codes = parse_codes_input(raw_code)
     if len(codes) == 0:
         return jsonify({"status": "error", "message": "No valid codes provided."}), 400
     if len(codes) > MAX_CODES_PER_ORDER:
@@ -686,7 +697,7 @@ def unipin_async():
     if not callback_url:
         return jsonify({"status": "error", "message": "Missing required field: url (callback URL)"}), 400
 
-    codes = [c.strip() for c in raw_code.split(",") if c.strip()]
+    codes = parse_codes_input(raw_code)
     if len(codes) == 0:
         return jsonify({"status": "error", "message": "No valid codes provided."}), 400
     if len(codes) > MAX_CODES_PER_ORDER:
