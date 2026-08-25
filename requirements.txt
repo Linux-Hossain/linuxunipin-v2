@@ -1,0 +1,4 @@
+Flask==3.1.0
+cloudscraper==1.2.71
+beautifulsoup4==4.13.3
+requests==2.32.3

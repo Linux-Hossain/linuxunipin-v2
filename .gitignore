@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.env
+transaction.json
+failed.json
+unipin_api_log.txt
