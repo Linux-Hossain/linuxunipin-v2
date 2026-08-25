@@ -837,181 +837,363 @@ def api_history():
 
 @app.route("/", methods=["GET"])
 def home():
-    packages_html = ""
-    for pid, info in DENOM_LIST.items():
-        packages_html += f"""
-        <div class="glass-card rounded-xl p-4 flex justify-between items-center transition-all hover:border-blue-500/50">
-            <div>
-                <span class="text-blue-400 font-bold text-xs bg-blue-500/10 border border-blue-500/20 px-2.5 py-1 rounded-full">ID: {pid}</span>
-                <h3 class="text-slate-200 font-semibold mt-3 text-sm">{info['name']}</h3>
-            </div>
-        </div>
-        """
-
-    html_content = """
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Flexbase UniPin API Hub</title>
-        <meta name="description" content="Automated Garena Free Fire UniPin voucher top-up gateway by Flexbase.">
-        <script src="https://cdn.tailwindcss.com"></script>
-        <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-        <style>
-            body { font-family: 'Plus Jakarta Sans', sans-serif; }
-            .glass-card {
-                background: rgba(30, 41, 59, 0.7);
-                backdrop-filter: blur(12px);
-                border: 1px solid rgba(51, 65, 85, 0.6);
+    html_content = """<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LinuxUniPin v2 — Free Fire TopUp API Documentation</title>
+    <meta name="description" content="High-performance, automated Free Fire UniPin voucher top-up REST API gateway.">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Plus Jakarta Sans', 'sans-serif'],
+                        display: ['Space Grotesk', 'sans-serif'],
+                        mono: ['Fira Code', 'monospace'],
+                    },
+                    colors: {
+                        cyber: {
+                            50: '#ecfdf5',
+                            500: '#10b981',
+                            600: '#059669',
+                            900: '#064e3b',
+                            950: '#022c22',
+                        }
+                    }
+                }
             }
-            .glow-effect { box-shadow: 0 0 25px -5px rgba(59, 130, 246, 0.15); }
-            .badge-get  { background: rgba(245,158,11,0.1); color:#fbbf24; border:1px solid rgba(245,158,11,0.3); }
-            .badge-post { background: rgba(34,197,94,0.1);  color:#4ade80; border:1px solid rgba(34,197,94,0.3); }
-        </style>
-    </head>
-    <body class="bg-slate-950 text-slate-100 min-h-screen p-6 md:p-10">
-        <div class="max-w-4xl mx-auto">
+        }
+    </script>
+    <style>
+        body { background-color: #050811; font-family: 'Plus Jakarta Sans', sans-serif; }
+        .glass-card {
+            background: rgba(13, 20, 36, 0.75);
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(16, 185, 129, 0.15);
+        }
+        .glass-card:hover {
+            border-color: rgba(16, 185, 129, 0.35);
+        }
+        .glow-emerald {
+            box-shadow: 0 0 35px -8px rgba(16, 185, 129, 0.25);
+        }
+        .glow-cyan {
+            box-shadow: 0 0 35px -8px rgba(6, 182, 212, 0.25);
+        }
+        .text-gradient {
+            background: linear-gradient(135deg, #10b981 0%, #06b6d4 50%, #a855f7 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        pre code { font-family: 'Fira Code', monospace; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #070b14; }
+        ::-webkit-scrollbar-thumb { background: #1f293d; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #10b981; }
+    </style>
+</head>
+<body class="text-slate-100 min-h-screen selection:bg-emerald-500 selection:text-slate-950">
 
-            <!-- Header -->
-            <header class="mb-10 text-center">
-                <div class="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-semibold uppercase tracking-wider mb-3">
-                    <span class="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
-                    Flexbase Gateway Live
+    <!-- Sticky Header -->
+    <header class="sticky top-0 z-50 glass-card border-b border-emerald-500/20 bg-slate-950/80 backdrop-blur-2xl">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-500 to-cyan-500 flex items-center justify-center text-slate-950 font-black font-display text-lg shadow-lg shadow-emerald-500/20">
+                    ⚡
                 </div>
-                <h1 class="text-3xl md:text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-indigo-400 to-purple-500 mb-2">
-                    Flexbase API Hub
-                </h1>
-                <p class="text-slate-400 text-xs md:text-sm">Automated Garena Free Fire UniPin Top-up Gateway &mdash; v2.0</p>
-            </header>
-
-            <!-- Endpoints Overview -->
-            <div class="glass-card rounded-2xl p-6 mb-6 glow-effect">
-                <h2 class="text-lg font-bold text-blue-400 mb-4 border-b border-slate-800 pb-3">API Endpoints</h2>
-                <div class="space-y-3">
-                    <div class="flex items-center gap-3 bg-slate-900/60 rounded-xl px-4 py-3 border border-slate-800">
-                        <span class="badge-post text-xs font-bold px-2.5 py-1 rounded-md">POST</span>
-                        <code class="text-emerald-400 text-sm font-mono">/api/unipin</code>
-                        <span class="text-slate-500 text-xs ml-auto">Sync Top-up — তাৎক্ষণিক রেজাল্ট</span>
-                    </div>
-                    <div class="flex items-center gap-3 bg-slate-900/60 rounded-xl px-4 py-3 border border-slate-800">
-                        <span class="badge-post text-xs font-bold px-2.5 py-1 rounded-md">POST</span>
-                        <code class="text-purple-400 text-sm font-mono">/api/unipin/async</code>
-                        <span class="text-slate-500 text-xs ml-auto">Async Top-up — 202 + Callback</span>
-                    </div>
-                    <div class="flex items-center gap-3 bg-slate-900/60 rounded-xl px-4 py-3 border border-slate-800">
-                        <span class="badge-get text-xs font-bold px-2.5 py-1 rounded-md">GET</span>
-                        <code class="text-amber-400 text-sm font-mono">/api/status/&#123;token&#125;</code>
-                        <span class="text-slate-500 text-xs ml-auto">Token ক্রেডিট ও মেয়াদ চেক</span>
-                    </div>
-                    <div class="flex items-center gap-3 bg-slate-900/60 rounded-xl px-4 py-3 border border-slate-800">
-                        <span class="badge-get text-xs font-bold px-2.5 py-1 rounded-md">GET</span>
-                        <code class="text-amber-400 text-sm font-mono">/api/history?token=&#123;token&#125;</code>
-                        <span class="text-slate-500 text-xs ml-auto">অর্ডার হিস্টোরি দেখুন</span>
-                    </div>
+                <div>
+                    <span class="font-display font-extrabold text-base sm:text-lg tracking-tight text-slate-100">LinuxUniPin <span class="text-gradient">v2</span></span>
+                    <span class="hidden sm:inline-block text-[10px] uppercase font-mono px-2 py-0.5 ml-2 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">v2.0 Live</span>
                 </div>
             </div>
-
-            <!-- Sync API Docs -->
-            <div class="glass-card rounded-2xl p-6 mb-6 glow-effect">
-                <h2 class="text-lg font-bold text-blue-400 mb-4 border-b border-slate-800 pb-3">POST /api/unipin — Sync Request</h2>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-                    <!-- Request -->
-                    <div>
-                        <p class="text-xs text-slate-400 font-semibold mb-2">📤 Request Body (JSON)</p>
-                        <pre class="text-xs text-emerald-400 font-mono bg-slate-950 p-3 rounded-xl border border-slate-800 overflow-x-auto">{
-  "orderid":   "ORD-001",
-  "uid":       "228197025",
-  "packageId": "1",
-  "code":      "CODE1,CODE2",
-  "apiKey":    "your-uuid-token"
-}</pre>
-                        <p class="text-xs text-slate-500 mt-2">💡 <code>code</code>: কমা দিয়ে max ৫টি কোড<br>💡 <code>orderid</code>: optional (auto-generate হবে)<br>💡 <code>apiKey</code>-এর বদলে Header: <code>Authorization: TOKEN</code> ব্যবহার করুন</p>
-                    </div>
-                    <!-- Response -->
-                    <div>
-                        <p class="text-xs text-slate-400 font-semibold mb-2">📥 Success Response</p>
-                        <pre class="text-xs text-emerald-400 font-mono bg-slate-950 p-3 rounded-xl border border-slate-800 overflow-x-auto">{
-  "status":    "success",
-  "orderid":   "ORD-001",
-  "nickname":  "PlayerName",
-  "region":    "BD",
-  "success":   2,
-  "failed":    0,
-  "total":     2,
-  "batch": [
-    {"uc":"CODE1","ok":true,"detail":"✅ Success"},
-    {"uc":"CODE2","ok":true,"detail":"✅ Success"}
-  ]
-}</pre>
-                    </div>
-                </div>
+            <div class="flex items-center gap-3">
+                <span class="hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-xs font-mono text-emerald-400">
+                    <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> 99.9% Uptime
+                </span>
+                <a href="https://github.com/Linux-Hossain/linuxunipin-v2" target="_blank" class="px-3.5 py-1.5 rounded-xl bg-slate-900 border border-slate-700/80 text-xs font-semibold hover:border-emerald-500/50 transition-all flex items-center gap-2 text-slate-300 hover:text-white">
+                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+                    GitHub
+                </a>
             </div>
-
-            <!-- Async API Docs -->
-            <div class="glass-card rounded-2xl p-6 mb-6">
-                <h2 class="text-lg font-bold text-purple-400 mb-4 border-b border-slate-800 pb-3">POST /api/unipin/async — Async Request</h2>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-                    <div>
-                        <p class="text-xs text-slate-400 font-semibold mb-2">📤 Request Body</p>
-                        <pre class="text-xs text-purple-400 font-mono bg-slate-950 p-3 rounded-xl border border-slate-800 overflow-x-auto">{
-  "orderid":   "ORD-002",
-  "uid":       "228197025",
-  "packageId": "1",
-  "code":      "CODE1,CODE2",
-  "url":       "https://yoursite.com/cb",
-  "apiKey":    "your-uuid-token"
-}</pre>
-                    </div>
-                    <div>
-                        <p class="text-xs text-slate-400 font-semibold mb-2">📥 Immediate Response (202)</p>
-                        <pre class="text-xs text-purple-400 font-mono bg-slate-950 p-3 rounded-xl border border-slate-800 overflow-x-auto">{
-  "status":  "accepted",
-  "orderid": "ORD-002"
-}
-<span class="text-slate-500">-- প্রসেস শেষে আপনার url-এ --</span>
-{
-  "status":   "partial",
-  "orderid":  "ORD-002",
-  "success":  1,
-  "failed":   1,
-  "batch":    [...]
-}</pre>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Status Codes -->
-            <div class="glass-card rounded-2xl p-6 mb-6">
-                <h2 class="text-lg font-bold text-blue-400 mb-4 border-b border-slate-800 pb-3">HTTP Error Codes</h2>
-                <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
-                    """ + "".join([f"""<div class="bg-slate-900/60 rounded-xl p-3 border border-slate-800">
-                        <span class="text-red-400 font-bold font-mono text-sm">{code}</span>
-                        <p class="text-slate-400 text-xs mt-1">{msg}</p>
-                    </div>""" for code, msg in [
-                        ("401", "Invalid/Missing Token"),
-                        ("402", "Credits exhausted / expired"),
-                        ("400", "Missing/invalid fields"),
-                        ("429", "Rate limit (20/min)"),
-                        ("500", "Internal server error"),
-                        ("202", "Async order accepted"),
-                    ]]) + """
-                </div>
-            </div>
-
-            <!-- Packages -->
-            <h2 class="text-xl font-bold mb-4 text-slate-200 border-b border-slate-800 pb-2">Available Package IDs</h2>
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 mb-10">
-                """ + packages_html + """
-            </div>
-
-            <footer class="mt-6 text-center text-xs text-slate-500 border-t border-slate-900 pt-5">
-                &copy; 2026 <span class="text-slate-400 font-semibold">Flexbase</span>. Powered by Flask &mdash; v2.0
-            </footer>
         </div>
-    </body>
-    </html>
-    """
+    </header>
+
+    <!-- Hero Banner -->
+    <div class="relative overflow-hidden border-b border-slate-900 bg-gradient-to-b from-emerald-950/20 via-slate-950 to-slate-950">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-14 relative z-10">
+            <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold tracking-wide mb-4">
+                <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                Fastest UniPin Voucher API Gateway
+            </div>
+            <h1 class="text-3xl sm:text-5xl font-display font-extrabold text-slate-100 tracking-tight leading-tight">
+                Free Fire TopUp <span class="text-gradient">API Documentation</span>
+            </h1>
+            <p class="text-slate-400 text-sm sm:text-base max-w-2xl mt-3 leading-relaxed">
+                Automated, high-concurrency REST API for UniPin Bangladesh voucher redemptions. Supports parallel thread batch processing, auto package detection, and webhook callbacks.
+            </p>
+            
+            <!-- Base URL Box -->
+            <div class="mt-6 p-4 glass-card rounded-2xl glow-emerald max-w-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div class="space-y-1">
+                    <span class="text-[11px] font-mono uppercase tracking-wider text-emerald-400 font-bold">Base URL</span>
+                    <code class="text-slate-200 font-mono text-sm block">https://linuxunipin-v2.vercel.app</code>
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="copyToClipboard('https://linuxunipin-v2.vercel.app')" class="px-3.5 py-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-semibold transition-all flex items-center gap-1.5">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"/></svg>
+                        Copy URL
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Container -->
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
+        <div class="grid grid-cols-1 lg:grid-cols-4 gap-8">
+            
+            <!-- Left Navigation (Desktop) -->
+            <aside class="hidden lg:block lg:col-span-1">
+                <div class="sticky top-24 space-y-1 glass-card p-4 rounded-2xl">
+                    <p class="text-[11px] font-mono uppercase font-bold text-slate-400 px-3 pb-2 border-b border-slate-800 mb-2">Documentation Menu</p>
+                    <a href="#overview" class="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20">
+                        ⚡ Overview & Features
+                    </a>
+                    <a href="#auth" class="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold text-slate-300 hover:text-emerald-400 hover:bg-slate-900 transition-all">
+                        🔑 Authentication
+                    </a>
+                    <a href="#sync-topup" class="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold text-slate-300 hover:text-emerald-400 hover:bg-slate-900 transition-all">
+                        🚀 Sync Topup (Direct)
+                    </a>
+                    <a href="#async-topup" class="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold text-slate-300 hover:text-emerald-400 hover:bg-slate-900 transition-all">
+                        🔄 Async Topup (Webhook)
+                    </a>
+                    <a href="#prefix-map" class="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold text-slate-300 hover:text-emerald-400 hover:bg-slate-900 transition-all">
+                        🎯 Auto Package Mapping
+                    </a>
+                    <a href="#status-codes" class="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold text-slate-300 hover:text-emerald-400 hover:bg-slate-900 transition-all">
+                        🚦 HTTP Response Codes
+                    </a>
+                </div>
+            </aside>
+
+            <!-- Right Content Area -->
+            <main class="lg:col-span-3 space-y-8">
+                
+                <!-- Overview -->
+                <section id="overview" class="glass-card p-6 rounded-2xl glow-emerald">
+                    <h2 class="text-xl font-display font-bold text-slate-100 flex items-center gap-2 mb-4 border-b border-slate-800 pb-3">
+                        <span class="text-emerald-400">⚡</span> Overview & Highlights
+                    </h2>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div class="p-4 bg-slate-900/60 rounded-xl border border-slate-800">
+                            <span class="text-2xl mb-2 block">🚀</span>
+                            <h3 class="font-bold text-sm text-slate-200">Parallel Execution</h3>
+                            <p class="text-xs text-slate-400 mt-1">Multi-code batch orders execute simultaneously using ThreadPoolExecutor (~2.7s for 2-5 codes).</p>
+                        </div>
+                        <div class="p-4 bg-slate-900/60 rounded-xl border border-slate-800">
+                            <span class="text-2xl mb-2 block">🎯</span>
+                            <h3 class="font-bold text-sm text-slate-200">Auto Package Detect</h3>
+                            <p class="text-xs text-slate-400 mt-1">No need to specify packageId manually. Automatically identifies 18 code prefix types.</p>
+                        </div>
+                        <div class="p-4 bg-slate-900/60 rounded-xl border border-slate-800">
+                            <span class="text-2xl mb-2 block">🧾</span>
+                            <h3 class="font-bold text-sm text-slate-200">Full Receipts & TRX</h3>
+                            <p class="text-xs text-slate-400 mt-1">Returns Garena / UniPin trans_no, date, reference, item name, and amount for every success item.</p>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Authentication -->
+                <section id="auth" class="glass-card p-6 rounded-2xl">
+                    <h2 class="text-xl font-display font-bold text-slate-100 flex items-center gap-2 mb-4 border-b border-slate-800 pb-3">
+                        <span class="text-emerald-400">🔑</span> Authentication
+                    </h2>
+                    <p class="text-xs sm:text-sm text-slate-300 leading-relaxed mb-4">
+                        API Authorization requires passing your API Key. The gateway supports multiple authorization methods for maximum developer convenience:
+                    </p>
+                    <div class="space-y-2 font-mono text-xs mb-4">
+                        <div class="p-3 bg-slate-900/80 rounded-xl border border-slate-800 flex justify-between items-center">
+                            <span class="text-emerald-400 font-bold">Header (Recommended)</span>
+                            <code class="text-slate-300">Authorization: Bearer 70c9188c-e70e-4eb3-bd50-7d375d2a390c</code>
+                        </div>
+                        <div class="p-3 bg-slate-900/80 rounded-xl border border-slate-800 flex justify-between items-center">
+                            <span class="text-cyan-400 font-bold">JSON Body</span>
+                            <code class="text-slate-300">"apiKey": "linux-lx0199222"</code>
+                        </div>
+                        <div class="p-3 bg-slate-900/80 rounded-xl border border-slate-800 flex justify-between items-center">
+                            <span class="text-purple-400 font-bold">URL Parameter</span>
+                            <code class="text-slate-300">?apiKey=linux-lx0199222</code>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Sync Topup -->
+                <section id="sync-topup" class="glass-card p-6 rounded-2xl glow-cyan">
+                    <div class="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
+                        <h2 class="text-xl font-display font-bold text-slate-100 flex items-center gap-2">
+                            <span class="text-cyan-400">🚀</span> Sync Topup — Instant Response
+                        </h2>
+                        <span class="px-2.5 py-1 rounded-md bg-emerald-500/10 text-emerald-400 font-mono text-xs font-bold border border-emerald-500/30">POST /topup-sync</span>
+                    </div>
+                    <p class="text-xs text-slate-400 mb-4">Direct response endpoint. Processes the voucher code(s) immediately and returns the exact transaction result.</p>
+                    
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <!-- Request -->
+                        <div>
+                            <div class="flex items-center justify-between text-xs font-semibold text-slate-300 mb-2">
+                                <span>📤 Request Payload (JSON)</span>
+                                <span class="text-[10px] text-slate-500">Max 5 codes</span>
+                            </div>
+                            <pre class="p-4 bg-slate-950 rounded-xl border border-slate-800 text-xs text-emerald-400 overflow-x-auto"><code>{
+  "orderid": "ORD-1001",
+  "playerid": "228197025",
+  "code": "BDMB-Q-S-15359391 2331-6265-6656-9336,BDMB-Q-S-15358262 5363-6431-5333-7468",
+  "apiKey": "70c9188c-e70e-4eb3-bd50-7d375d2a390c"
+}</code></pre>
+                        </div>
+                        <!-- Response -->
+                        <div>
+                            <div class="flex items-center justify-between text-xs font-semibold text-slate-300 mb-2">
+                                <span>📥 Response (200 OK)</span>
+                                <span class="text-[10px] text-emerald-400">UcBot Compatible</span>
+                            </div>
+                            <pre class="p-4 bg-slate-950 rounded-xl border border-slate-800 text-xs text-cyan-300 overflow-x-auto"><code>{
+  "status": "success",
+  "orderid": "ORD-1001",
+  "nickname": "PlayerName",
+  "username": "PlayerName",
+  "region": "BD",
+  "total": 2,
+  "success": 2,
+  "failed": 0,
+  "batch": [
+    {
+      "uc": "BDMB-Q-S-15359391 2331-6265-6656-9336",
+      "ok": true,
+      "detail": "✅ Success",
+      "trx_id": "UP-20260826-001"
+    },
+    {
+      "uc": "BDMB-Q-S-15358262 5363-6431-5333-7468",
+      "ok": true,
+      "detail": "✅ Success",
+      "trx_id": "UP-20260826-002"
+    }
+  ]
+}</code></pre>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Async Topup -->
+                <section id="async-topup" class="glass-card p-6 rounded-2xl">
+                    <div class="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
+                        <h2 class="text-xl font-display font-bold text-slate-100 flex items-center gap-2">
+                            <span class="text-purple-400">🔄</span> Async Topup — Webhook Callback
+                        </h2>
+                        <span class="px-2.5 py-1 rounded-md bg-purple-500/10 text-purple-400 font-mono text-xs font-bold border border-purple-500/30">POST /topup</span>
+                    </div>
+                    <p class="text-xs text-slate-400 mb-4">Returns HTTP 202 Accepted immediately. Processing happens in the background, and final results are POSTed to your webhook URL.</p>
+                    
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <span class="text-xs font-semibold text-slate-300 block mb-2">📤 Request Payload</span>
+                            <pre class="p-4 bg-slate-950 rounded-xl border border-slate-800 text-xs text-purple-300 overflow-x-auto"><code>{
+  "orderid": "ORD-1002",
+  "playerid": "228197025",
+  "code": "BDMB-T-S-XXXXXX XXXX-XXXX-XXXX-XXXX",
+  "url": "https://yoursite.com/api/webhook",
+  "apiKey": "linux-lx0199222"
+}</code></pre>
+                        </div>
+                        <div>
+                            <span class="text-xs font-semibold text-slate-300 block mb-2">📥 Immediate Response (202 Accepted)</span>
+                            <pre class="p-4 bg-slate-950 rounded-xl border border-slate-800 text-xs text-emerald-400 overflow-x-auto"><code>{
+  "status": "accepted",
+  "orderid": "ORD-1002"
+}
+
+/* Later POSTed to your webhook URL */
+{
+  "status": "success",
+  "orderid": "ORD-1002",
+  "nickname": "PlayerName",
+  "batch": [...]
+}</code></pre>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Prefix Mapping Table -->
+                <section id="prefix-map" class="glass-card p-6 rounded-2xl">
+                    <h2 class="text-xl font-display font-bold text-slate-100 flex items-center gap-2 mb-4 border-b border-slate-800 pb-3">
+                        <span class="text-amber-400">🎯</span> Auto Package Detection Table
+                    </h2>
+                    <p class="text-xs text-slate-400 mb-4">The API inspects code prefixes (BDMB & UPBD series) to auto-detect denominations:</p>
+
+                    <div class="overflow-x-auto rounded-xl border border-slate-800">
+                        <table class="w-full text-xs text-left text-slate-300">
+                            <thead class="bg-slate-900/80 text-emerald-400 font-mono uppercase text-[11px] border-b border-slate-800">
+                                <tr>
+                                    <th class="py-3 px-4">BDMB Series</th>
+                                    <th class="py-3 px-4">UPBD Series</th>
+                                    <th class="py-3 px-4">Product Name</th>
+                                    <th class="py-3 px-4 text-center">Package ID</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-800/60 font-mono">
+                                <tr class="hover:bg-slate-900/40"><td class="py-2.5 px-4 text-emerald-400 font-bold">BDMB-T-S</td><td class="py-2.5 px-4 text-cyan-400 font-bold">UPBD-Q-S</td><td class="py-2.5 px-4 font-sans text-slate-200">25 Diamond</td><td class="py-2.5 px-4 text-center text-amber-400">1</td></tr>
+                                <tr class="hover:bg-slate-900/40"><td class="py-2.5 px-4 text-emerald-400 font-bold">BDMB-U-S</td><td class="py-2.5 px-4 text-cyan-400 font-bold">UPBD-R-S</td><td class="py-2.5 px-4 font-sans text-slate-200">50 Diamond</td><td class="py-2.5 px-4 text-center text-amber-400">2</td></tr>
+                                <tr class="hover:bg-slate-900/40"><td class="py-2.5 px-4 text-emerald-400 font-bold">BDMB-J-S</td><td class="py-2.5 px-4 text-cyan-400 font-bold">UPBD-G-S</td><td class="py-2.5 px-4 font-sans text-slate-200">115 Diamond</td><td class="py-2.5 px-4 text-center text-amber-400">3</td></tr>
+                                <tr class="hover:bg-slate-900/40"><td class="py-2.5 px-4 text-emerald-400 font-bold">BDMB-I-S</td><td class="py-2.5 px-4 text-cyan-400 font-bold">UPBD-F-S</td><td class="py-2.5 px-4 font-sans text-slate-200">240 Diamond</td><td class="py-2.5 px-4 text-center text-amber-400">4</td></tr>
+                                <tr class="hover:bg-slate-900/40"><td class="py-2.5 px-4 text-emerald-400 font-bold">BDMB-K-S</td><td class="py-2.5 px-4 text-cyan-400 font-bold">UPBD-H-S</td><td class="py-2.5 px-4 font-sans text-slate-200">610 Diamond</td><td class="py-2.5 px-4 text-center text-amber-400">5</td></tr>
+                                <tr class="hover:bg-slate-900/40"><td class="py-2.5 px-4 text-emerald-400 font-bold">BDMB-L-S</td><td class="py-2.5 px-4 text-cyan-400 font-bold">UPBD-I-S</td><td class="py-2.5 px-4 font-sans text-slate-200">1240 Diamond</td><td class="py-2.5 px-4 text-center text-amber-400">6</td></tr>
+                                <tr class="hover:bg-slate-900/40"><td class="py-2.5 px-4 text-emerald-400 font-bold">BDMB-M-S</td><td class="py-2.5 px-4 text-cyan-400 font-bold">UPBD-J-S</td><td class="py-2.5 px-4 font-sans text-slate-200">2530 Diamond</td><td class="py-2.5 px-4 text-center text-amber-400">7</td></tr>
+                                <tr class="hover:bg-slate-900/40"><td class="py-2.5 px-4 text-emerald-400 font-bold">BDMB-Q-S</td><td class="py-2.5 px-4 text-cyan-400 font-bold">UPBD-N-S</td><td class="py-2.5 px-4 font-sans text-slate-200">Weekly Membership</td><td class="py-2.5 px-4 text-center text-amber-400">8</td></tr>
+                                <tr class="hover:bg-slate-900/40"><td class="py-2.5 px-4 text-emerald-400 font-bold">BDMB-S-S</td><td class="py-2.5 px-4 text-cyan-400 font-bold">UPBD-P-S</td><td class="py-2.5 px-4 font-sans text-slate-200">Monthly Membership</td><td class="py-2.5 px-4 text-center text-amber-400">9</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <!-- HTTP Response Codes -->
+                <section id="status-codes" class="glass-card p-6 rounded-2xl">
+                    <h2 class="text-xl font-display font-bold text-slate-100 flex items-center gap-2 mb-4 border-b border-slate-800 pb-3">
+                        <span class="text-emerald-400">🚦</span> HTTP Status Codes
+                    </h2>
+                    <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                        <div class="p-3 bg-slate-900/80 rounded-xl border border-slate-800"><span class="text-emerald-400 font-mono font-bold">200 OK</span><p class="text-[11px] text-slate-400 mt-1">Successful order execution</p></div>
+                        <div class="p-3 bg-slate-900/80 rounded-xl border border-slate-800"><span class="text-purple-400 font-mono font-bold">202 Accepted</span><p class="text-[11px] text-slate-400 mt-1">Async order accepted for callback</p></div>
+                        <div class="p-3 bg-slate-900/80 rounded-xl border border-slate-800"><span class="text-amber-400 font-mono font-bold">400 Bad Request</span><p class="text-[11px] text-slate-400 mt-1">Missing required fields or >5 codes</p></div>
+                        <div class="p-3 bg-slate-900/80 rounded-xl border border-slate-800"><span class="text-red-400 font-mono font-bold">401 Unauthorized</span><p class="text-[11px] text-slate-400 mt-1">Invalid or missing API key</p></div>
+                        <div class="p-3 bg-slate-900/80 rounded-xl border border-slate-800"><span class="text-red-400 font-mono font-bold">500 Server Error</span><p class="text-[11px] text-slate-400 mt-1">Internal server or scraper failure</p></div>
+                    </div>
+                </section>
+
+            </main>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="border-t border-slate-900 py-8 text-center text-xs text-slate-500 bg-slate-950">
+        <p>&copy; 2026 <span class="text-slate-300 font-semibold">LinuxUniPin v2</span>. Developed with Flask & ThreadPoolExecutor.</p>
+    </footer>
+
+    <script>
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                alert('Copied to clipboard: ' + text);
+            });
+        }
+    </script>
+</body>
+</html>"""
     return render_template_string(html_content)
 
 
