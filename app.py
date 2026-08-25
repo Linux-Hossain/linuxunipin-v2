@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, render_template_string
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 import cloudscraper
 from bs4 import BeautifulSoup
 import re
@@ -509,62 +510,107 @@ def execute_redeem(input_url: str, packageId: str, user_input: str) -> dict:
 
 # ─── Batch Processor ──────────────────────────────────────────────────────────
 
+def process_single_code(args_tuple: tuple) -> tuple:
+    """
+    একটি একক কোডের জন্য Garena Session Init ও UniPin Redeem সম্পন্ন করে।
+    Parallel execution-এর জন্য ব্যবহৃত হয়।
+    """
+    idx, code, uid, fallback_package_id = args_tuple
+    code = code.strip()
+    if not code:
+        return idx, None, False, "N/A", "N/A"
+
+    # কোড দেখে প্যাক নির্ধারণ (না পারলে রিকোয়েস্টের packageId)
+    pkg = detect_package_id(code) or fallback_package_id
+
+    # Garena সেশন ইনিট
+    init_res = garena_payment_init(str(uid))
+
+    if init_res["status"] == "error":
+        batch_item = {
+            "uc": code,
+            "ok": False,
+            "detail": f"❌ {init_res['message']}"
+        }
+        return idx, batch_item, False, "N/A", "N/A"
+
+    nick = init_res.get("nickname", "N/A")
+    reg  = init_res.get("region", "N/A")
+
+    # ভাউচার রিডিম
+    redeem_res = execute_redeem(init_res["url"], pkg, code)
+    ok = redeem_res["status"] == "success"
+
+    if ok:
+        detail = "✅ Success"
+        trx_id = redeem_res.get("details", {}).get("trans_no", None)
+        batch_item = {"uc": code, "ok": ok, "detail": detail}
+        if trx_id and trx_id != "N/A":
+            batch_item["trx_id"] = trx_id
+        if redeem_res.get("details"):
+            batch_item["receipt"] = redeem_res["details"]
+    else:
+        msg = redeem_res.get("message", "Failed")
+        detail = f"❌ {msg}"
+        batch_item = {"uc": code, "ok": ok, "detail": detail}
+
+    return idx, batch_item, ok, nick, reg
+
+
 def process_batch(uid: str, packageId: str, codes: list, orderid: str) -> dict:
     """
     একাধিক UniPin ভাউচার কোড প্রসেস করে batch রেজাল্ট রিটার্ন করে।
-    প্রতিটি কোডের জন্য আলাদাভাবে Garena সেশন ইনিট ও UniPin রিডিম করা হয়।
+    একাধিক কোড থাকলে ThreadPoolExecutor দিয়ে প্যারালালে (একসাথে) দ্রুত রিডিম করা হয়।
     """
-    batch_results = []
+    valid_tasks = [(i, code, uid, packageId) for i, code in enumerate(codes) if code.strip()]
+
+    if not valid_tasks:
+        return {
+            "status": "failed",
+            "orderid": orderid,
+            "nickname": "N/A",
+            "username": "N/A",
+            "region": "N/A",
+            "success": 0,
+            "failed": 0,
+            "total": 0,
+            "batch": []
+        }
+
+    raw_results = [None] * len(valid_tasks)
     success_count = 0
     fail_count    = 0
     nickname      = "N/A"
     region        = "N/A"
 
-    for i, code in enumerate(codes):
-        code = code.strip()
-        if not code:
-            continue
-
-        # প্রতিটি কোডের জন্য নতুন Garena সেশন ইনিট
-        init_res = garena_payment_init(str(uid))
-
-        if init_res["status"] == "error":
-            batch_results.append({
-                "uc": code,
-                "ok": False,
-                "detail": f"❌ {init_res['message']}"
-            })
-            fail_count += 1
-            continue
-
-        nickname = init_res.get("nickname", nickname)
-        region   = init_res.get("region", region)
-
-        # ভাউচার রিডিম
-        redeem_res = execute_redeem(init_res["url"], packageId, code)
-        ok = redeem_res["status"] == "success"
-
+    if len(valid_tasks) == 1:
+        # ১টি কোড থাকলে কোনো থ্রেড পুল ছাড়াই সরাসরি ফাস্ট প্রসেস (অতিরিক্ত ওভারহেড ছাড়া)
+        idx, item, ok, nick, reg = process_single_code(valid_tasks[0])
+        raw_results[0] = item
         if ok:
-            detail = "✅ Success"
             success_count += 1
-            # trx_id: UniPin transaction number (trans_no)
-            trx_id = redeem_res.get("details", {}).get("trans_no", None)
-            batch_item = {"uc": code, "ok": ok, "detail": detail}
-            if trx_id and trx_id != "N/A":
-                batch_item["trx_id"] = trx_id
-            # Full UniPin receipt details
-            if redeem_res.get("details"):
-                batch_item["receipt"] = redeem_res["details"]
         else:
-            msg = redeem_res.get("message", "Failed")
-            detail = f"❌ {msg}"
             fail_count += 1
-            batch_item = {"uc": code, "ok": ok, "detail": detail}
+        if nick != "N/A": nickname = nick
+        if reg != "N/A":  region = reg
+    else:
+        # একাধিক কোড (২-৫টি) থাকলে ThreadPoolExecutor দিয়ে প্যারালালে প্রসেস করো (৫ গুণ ফাস্ট)
+        max_workers = min(len(valid_tasks), 5)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            task_outputs = list(executor.map(process_single_code, valid_tasks))
 
-        batch_results.append(batch_item)
+        for idx, item, ok, nick, reg in task_outputs:
+            raw_results[idx] = item
+            if ok:
+                success_count += 1
+            else:
+                fail_count += 1
+            if nick != "N/A": nickname = nick
+            if reg != "N/A":  region = reg
 
-    # Overall Status নির্ধারণ
+    batch_results = [b for b in raw_results if b is not None]
     total = len(batch_results)
+
     if total == 0:
         status = "failed"
     elif success_count == total:
