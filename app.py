@@ -147,18 +147,32 @@ def log_data(filename: str, data: dict):
 
 # ─── Garena Payment Init ──────────────────────────────────────────────────────
 
+def create_optimized_scraper():
+    """
+    Cloudscraper সেশন তৈরি করে এবং TCP Connection Pooling mount করে
+    যাতে SSL Handshake পুনরায় ব্যবহার করে নেটওয়ার্ক ডেলি কমানো যায়।
+    """
+    scraper = cloudscraper.create_scraper(
+        browser={'browser': 'chrome', 'platform': 'android', 'desktop': False}
+    )
+    adapter = http_requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=1)
+    scraper.mount("https://", adapter)
+    scraper.mount("http://", adapter)
+    return scraper
+
+
+# ─── Garena Payment Init ──────────────────────────────────────────────────────
+
 def garena_payment_init(player_id: str) -> dict:
     """
     Garena শপে লগইন করে UniPin পেমেন্ট ইনিট URL সংগ্রহ করে।
     Returns: {"status": "success", "url": ..., "nickname": ..., "region": ...}
              or {"status": "error", "message": ...}
     """
-    scraper = cloudscraper.create_scraper(
-        browser={'browser': 'chrome', 'platform': 'android', 'desktop': False}
-    )
+    scraper = create_optimized_scraper()
 
     # Step 1: মূল পেজ থেকে mspid2 কুকি নাও
-    scraper.get("https://shop.garena.my")
+    scraper.get("https://shop.garena.my", timeout=(5, 10))
     mspid2 = scraper.cookies.get('mspid2', '')
 
     if not mspid2:
@@ -181,14 +195,14 @@ def garena_payment_init(player_id: str) -> dict:
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Dest": "empty",
         "Referer": "https://shop.garena.my/",
-        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Accept-Encoding": "gzip, deflate, br",
         "Accept-Language": "en-US,en;q=0.9",
         "Cookie": f"source=mb; region=SG; language=en; mspid2={mspid2}; datadome=nlGy58ylgnGLA7pbxHdEpTXIsdw5R8RBCix0cQMSBVv0awQIhiqELM4qjar2WzXtzFVXS1xAWKnpGquK491kPw2FqLg30LzNkG7O1RYBHswcrUGw5ASGX8JZLjT9inpl; _fbp=fb.1.1787337260137.26816900912074180"
     }
     login_payload = {"app_id": 100067, "login_id": player_id}
 
     try:
-        login_res = scraper.post(login_url, headers=login_headers, json=login_payload)
+        login_res = scraper.post(login_url, headers=login_headers, json=login_payload, timeout=(5, 10))
         login_data = login_res.json()
         login_nickname = login_data.get('nickname', '')
         login_region = login_data.get('region', '')
@@ -204,22 +218,47 @@ def garena_payment_init(player_id: str) -> dict:
     if not session_key:
         return {"status": "error", "message": "Session Key not found."}
 
-    # Step 3: Preflight & CSRF
-    preflight_url = "https://shop.garena.my/api/preflight"
+    # Step 3: Role ভেরিফিকেশন
+    role_url = "https://shop.garena.my/api/shop/apps/roles?app_id=100067&region=MY&language=en&source=mb"
     role_headers = {
         "Host": "shop.garena.my",
         "Connection": "keep-alive",
         "sec-ch-ua-platform": '"Android"',
         "User-Agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
         "Accept": "application/json, text/plain, */*",
-        "Cookie": f"source=mb; region=MY; language=en; mspid2={mspid2}; datadome={new_datadome}; session_key={session_key}"
+        "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Android WebView";v="146"',
+        "sec-ch-ua-mobile": "?1",
+        "X-Requested-With": "mark.via.gp",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+        "Referer": "https://shop.garena.my/?app=100067&channel=202953",
+        "accept-encoding": "gzip, deflate",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cookie": f"source=mb; region=MY; language=en; mspid2={mspid2}; _fbp=fb.1.1774388514116.22736515472593712; __csrf__=zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7; datadome={new_datadome}; session_key={session_key}"
     }
-    preflight_res = scraper.post(preflight_url, headers=role_headers)
+
+    try:
+        role_res = scraper.get(role_url, headers=role_headers, timeout=(5, 10))
+        role_data = role_res.json()
+        player_info = role_data.get("100067", [])[0]
+
+        role_nickname = player_info.get("role", "")
+        role_region = player_info.get("region", "")
+
+        if role_nickname != login_nickname or role_region != login_region:
+            return {"status": "error", "message": f"Verification Failed! Mismatch: Expected {login_nickname}, Found {role_nickname}"}
+    except Exception:
+        return {"status": "error", "message": "Roles not found or verification failed."}
+
+    # Step 4: Preflight & CSRF
+    preflight_url = "https://shop.garena.my/api/preflight"
+    preflight_res = scraper.post(preflight_url, headers=role_headers, timeout=(5, 10))
     set_cookie = preflight_res.headers.get('Set-Cookie', '')
     csrf_match = re.search(r'__csrf__=([^;]+)', set_cookie)
     new_csrf = csrf_match.group(1) if csrf_match else "zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7"
 
-    # Step 4: Payment Init (UniPin URL আনা)
+    # Step 5: Payment Init (UniPin URL আনা)
     pay_init_url = "https://shop.garena.my/api/shop/pay/init?region=MY&language=en"
     pay_headers = {
         "Host": "shop.garena.my",
@@ -247,7 +286,7 @@ def garena_payment_init(player_id: str) -> dict:
     }
 
     try:
-        final_res = scraper.post(pay_init_url, headers=pay_headers, json=pay_payload)
+        final_res = scraper.post(pay_init_url, headers=pay_headers, json=pay_payload, timeout=(5, 10))
         init_url = final_res.json().get('init', {}).get('url', '')
         if init_url:
             return {"status": "success", "url": init_url, "nickname": login_nickname, "region": login_region}
@@ -264,7 +303,7 @@ def execute_redeem(input_url: str, packageId: str, user_input: str) -> dict:
     Returns: {"status": "success", "details": {...}}
              or {"status": "error", "message": ...}
     """
-    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'android', 'desktop': False})
+    scraper = create_optimized_scraper()
 
     match = re.search(r'/unibox/d/([^?]+)', input_url)
     if not match:
@@ -276,7 +315,7 @@ def execute_redeem(input_url: str, packageId: str, user_input: str) -> dict:
         res1 = scraper.get(input_url, headers={
             "user-agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
             "referer": "https://shop.garena.my/"
-        })
+        }, timeout=(5, 10))
         c1 = scraper.cookies.get_dict()
         xsrf_1 = c1.get('__Host-XSRF-TOKEN', '')
         session_1 = c1.get('unipin_session', '')
@@ -284,12 +323,13 @@ def execute_redeem(input_url: str, packageId: str, user_input: str) -> dict:
         # Step 2: Denomination সিলেকশন পেজ লোড
         denom_page_url = f"https://www.unipin.com/unibox/select_denom/{unique_id}?lg=en"
         headers2 = {
+            "upgrade-insecure-requests": "1",
             "user-agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
             "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "referer": "https://shop.garena.my/",
             "cookie": f"region=BGD; __Host-XSRF-TOKEN={xsrf_1}; unipin_session={session_1}"
         }
-        res2 = scraper.get(denom_page_url, headers=headers2)
+        res2 = scraper.get(denom_page_url, headers=headers2, timeout=(5, 10))
 
         c2 = scraper.cookies.get_dict()
         xsrf_2 = c2.get('__Host-XSRF-TOKEN', xsrf_1)
@@ -312,19 +352,48 @@ def execute_redeem(input_url: str, packageId: str, user_input: str) -> dict:
             "cookie": f"region=BGD; __Host-XSRF-TOKEN={xsrf_2}; unipin_session={session_2}"
         }
         payload3 = {"_token": meta_token, "denomination": DENOM_LIST[packageId]['payload']}
-        res3 = scraper.post(denom_page_url, data=payload3, headers=headers3)
+        res3 = scraper.post(denom_page_url, data=payload3, headers=headers3, timeout=(5, 10))
 
         c3 = scraper.cookies.get_dict()
         xsrf_3 = c3.get('__Host-XSRF-TOKEN', xsrf_2)
         session_3 = c3.get('unipin_session', session_2)
 
-        # Step 4: সিরিয়াল ও পিন পার্স করা
+        # Step 4: ভাউচার পেজ লোড
+        headers4 = {
+            "upgrade-insecure-requests": "1",
+            "user-agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "referer": f"https://www.unipin.com/unibox/select_denom/{unique_id}?lg=en",
+            "cookie": f"region=BGD; __Host-XSRF-TOKEN={xsrf_3}; unipin_session={session_3}"
+        }
+        res4 = scraper.get(input_url, headers=headers4, timeout=(5, 10))
+
+        c4 = scraper.cookies.get_dict()
+        xsrf_4 = c4.get('__Host-XSRF-TOKEN', xsrf_3)
+        session_4 = c4.get('unipin_session', session_3)
+
+        # Step 5: সিরিয়াল ও পিন পার্স করা
         parts        = user_input.strip().split(" ")
         clean_serial = parts[0].replace("-", "")
         pin_parts    = parts[1].split("-")
         path_id      = get_path_id(user_input)
 
-        # Step 5: ভাউচার সাবমিট (Final Direct POST)
+        # Step 6: ভাউচার পেজ GET
+        voucher_url = f"https://www.unipin.com/unibox/c/{unique_id}/{path_id}?b=1"
+        headers5 = {
+            "upgrade-insecure-requests": "1",
+            "user-agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "referer": f"https://www.unipin.com/unibox/d/{unique_id}?lg=en",
+            "cookie": f"region=BGD; __Host-XSRF-TOKEN={xsrf_4}; unipin_session={session_4}"
+        }
+        res5 = scraper.get(voucher_url, headers=headers5, timeout=(5, 10))
+
+        c5 = scraper.cookies.get_dict()
+        xsrf_5 = c5.get('__Host-XSRF-TOKEN', xsrf_4)
+        session_5 = c5.get('unipin_session', session_4)
+
+        # Step 7: ভাউচার সাবমিট (Final POST)
         final_post_url = f"https://www.unipin.com/unibox/c/{unique_id}/{path_id}"
         headers6 = {
             "origin": "https://www.unipin.com",
@@ -332,7 +401,7 @@ def execute_redeem(input_url: str, packageId: str, user_input: str) -> dict:
             "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "content-type": "application/x-www-form-urlencoded",
             "referer": f"https://www.unipin.com/unibox/c/{unique_id}/{path_id}?b=1",
-            "cookie": f"region=BGD; unipin_session={session_3}; __Host-XSRF-TOKEN={xsrf_3}"
+            "cookie": f"region=BGD; unipin_session={session_5}; __Host-XSRF-TOKEN={xsrf_5}"
         }
         final_payload = {
             "_token": meta_token,
@@ -343,7 +412,7 @@ def execute_redeem(input_url: str, packageId: str, user_input: str) -> dict:
             "pin_4": pin_parts[3]
         }
 
-        final_res = scraper.post(final_post_url, data=urlencode(final_payload), headers=headers6)
+        final_res = scraper.post(final_post_url, data=urlencode(final_payload), headers=headers6, timeout=(5, 10))
         final_soup = BeautifulSoup(final_res.text, 'html.parser')
 
         # Step 8: রেজাল্ট পার্স
