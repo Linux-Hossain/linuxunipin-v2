@@ -147,29 +147,15 @@ def log_data(filename: str, data: dict):
 
 # ─── Garena Payment Init ──────────────────────────────────────────────────────
 
-def create_optimized_scraper():
-    """
-    Cloudscraper সেশন তৈরি করে এবং TCP Connection Pooling mount করে
-    যাতে SSL Handshake পুনরায় ব্যবহার করে নেটওয়ার্ক ডেলি কমানো যায়।
-    """
-    scraper = cloudscraper.create_scraper(
-        browser={'browser': 'chrome', 'platform': 'android', 'desktop': False}
-    )
-    adapter = http_requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=1)
-    scraper.mount("https://", adapter)
-    scraper.mount("http://", adapter)
-    return scraper
-
-
-# ─── Garena Payment Init ──────────────────────────────────────────────────────
-
 def garena_payment_init(player_id: str) -> dict:
     """
     Garena শপে লগইন করে UniPin পেমেন্ট ইনিট URL সংগ্রহ করে।
     Returns: {"status": "success", "url": ..., "nickname": ..., "region": ...}
              or {"status": "error", "message": ...}
     """
-    scraper = create_optimized_scraper()
+    scraper = cloudscraper.create_scraper(
+        browser={'browser': 'chrome', 'platform': 'android', 'desktop': False}
+    )
 
     # Step 1: মূল পেজ থেকে mspid2 কুকি নাও
     scraper.get("https://shop.garena.my", timeout=(5, 10))
@@ -303,7 +289,7 @@ def execute_redeem(input_url: str, packageId: str, user_input: str) -> dict:
     Returns: {"status": "success", "details": {...}}
              or {"status": "error", "message": ...}
     """
-    scraper = create_optimized_scraper()
+    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'android', 'desktop': False})
 
     match = re.search(r'/unibox/d/([^?]+)', input_url)
     if not match:
