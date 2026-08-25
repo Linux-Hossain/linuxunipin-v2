@@ -204,47 +204,22 @@ def garena_payment_init(player_id: str) -> dict:
     if not session_key:
         return {"status": "error", "message": "Session Key not found."}
 
-    # Step 3: Role ভেরিফিকেশন
-    role_url = "https://shop.garena.my/api/shop/apps/roles?app_id=100067&region=MY&language=en&source=mb"
+    # Step 3: Preflight & CSRF
+    preflight_url = "https://shop.garena.my/api/preflight"
     role_headers = {
         "Host": "shop.garena.my",
         "Connection": "keep-alive",
         "sec-ch-ua-platform": '"Android"',
         "User-Agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
         "Accept": "application/json, text/plain, */*",
-        "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Android WebView";v="146"',
-        "sec-ch-ua-mobile": "?1",
-        "X-Requested-With": "mark.via.gp",
-        "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Dest": "empty",
-        "Referer": "https://shop.garena.my/?app=100067&channel=202953",
-        "accept-encoding": "gzip, deflate",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cookie": f"source=mb; region=MY; language=en; mspid2={mspid2}; _fbp=fb.1.1774388514116.22736515472593712; __csrf__=zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7; datadome={new_datadome}; session_key={session_key}"
+        "Cookie": f"source=mb; region=MY; language=en; mspid2={mspid2}; datadome={new_datadome}; session_key={session_key}"
     }
-
-    try:
-        role_res = scraper.get(role_url, headers=role_headers)
-        role_data = role_res.json()
-        player_info = role_data.get("100067", [])[0]
-
-        role_nickname = player_info.get("role", "")
-        role_region = player_info.get("region", "")
-
-        if role_nickname != login_nickname or role_region != login_region:
-            return {"status": "error", "message": f"Verification Failed! Mismatch: Expected {login_nickname}, Found {role_nickname}"}
-    except Exception:
-        return {"status": "error", "message": "Roles not found or verification failed."}
-
-    # Step 4: Preflight & CSRF
-    preflight_url = "https://shop.garena.my/api/preflight"
     preflight_res = scraper.post(preflight_url, headers=role_headers)
     set_cookie = preflight_res.headers.get('Set-Cookie', '')
     csrf_match = re.search(r'__csrf__=([^;]+)', set_cookie)
     new_csrf = csrf_match.group(1) if csrf_match else "zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7"
 
-    # Step 5: Payment Init (UniPin URL আনা)
+    # Step 4: Payment Init (UniPin URL আনা)
     pay_init_url = "https://shop.garena.my/api/shop/pay/init?region=MY&language=en"
     pay_headers = {
         "Host": "shop.garena.my",
@@ -253,17 +228,7 @@ def garena_payment_init(player_id: str) -> dict:
         "x-csrf-token": new_csrf,
         "User-Agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
         "Accept": "application/json, text/plain, */*",
-        "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Android WebView";v="146"',
         "Content-Type": "application/json",
-        "sec-ch-ua-mobile": "?1",
-        "Origin": "https://shop.garena.my",
-        "X-Requested-With": "mark.via.gp",
-        "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Dest": "empty",
-        "Referer": "https://shop.garena.my/?app=100067&channel=202953",
-        "accept-encoding": "gzip, deflate",
-        "Accept-Language": "en-US,en;q=0.9",
         "Cookie": f"source=mb; region=MY; language=en; mspid2={mspid2}; session_key={session_key}; datadome={new_datadome}; __csrf__={new_csrf}"
     }
     pay_payload = {
@@ -319,23 +284,10 @@ def execute_redeem(input_url: str, packageId: str, user_input: str) -> dict:
         # Step 2: Denomination সিলেকশন পেজ লোড
         denom_page_url = f"https://www.unipin.com/unibox/select_denom/{unique_id}?lg=en"
         headers2 = {
-            "upgrade-insecure-requests": "1",
             "user-agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
-            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            "dnt": "1",
-            "x-requested-with": "mark.via.gp",
-            "sec-fetch-site": "none",
-            "sec-fetch-mode": "navigate",
-            "sec-fetch-user": "?1",
-            "sec-fetch-dest": "document",
-            "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Android WebView";v="146"',
-            "sec-ch-ua-mobile": "?1",
-            "sec-ch-ua-platform": '"Android"',
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "referer": "https://shop.garena.my/",
-            "accept-encoding": "gzip, deflate",
-            "accept-language": "en-US,en;q=0.9",
-            "cookie": f"region=BGD; __Host-XSRF-TOKEN={xsrf_1}; unipin_session={session_1}",
-            "priority": "u=0, i"
+            "cookie": f"region=BGD; __Host-XSRF-TOKEN={xsrf_1}; unipin_session={session_1}"
         }
         res2 = scraper.get(denom_page_url, headers=headers2)
 
@@ -353,25 +305,11 @@ def execute_redeem(input_url: str, packageId: str, user_input: str) -> dict:
 
         # Step 3: Denomination সিলেক্ট করে POST
         headers3 = {
-            "cache-control": "max-age=0",
-            "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Android WebView";v="146"',
-            "sec-ch-ua-mobile": "?1",
-            "sec-ch-ua-platform": '"Android"',
             "origin": "https://www.unipin.com",
             "content-type": "application/x-www-form-urlencoded",
-            "upgrade-insecure-requests": "1",
             "user-agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
-            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            "x-requested-with": "mark.via.gp",
-            "sec-fetch-site": "same-origin",
-            "sec-fetch-mode": "navigate",
-            "sec-fetch-user": "?1",
-            "sec-fetch-dest": "document",
             "referer": f"https://www.unipin.com/unibox/select_denom/{unique_id}?lg=en",
-            "accept-encoding": "gzip, deflate",
-            "accept-language": "en-US,en;q=0.9",
-            "cookie": f"region=BGD; __Host-XSRF-TOKEN={xsrf_2}; unipin_session={session_2}",
-            "priority": "u=0, i"
+            "cookie": f"region=BGD; __Host-XSRF-TOKEN={xsrf_2}; unipin_session={session_2}"
         }
         payload3 = {"_token": meta_token, "denomination": DENOM_LIST[packageId]['payload']}
         res3 = scraper.post(denom_page_url, data=payload3, headers=headers3)
@@ -380,87 +318,21 @@ def execute_redeem(input_url: str, packageId: str, user_input: str) -> dict:
         xsrf_3 = c3.get('__Host-XSRF-TOKEN', xsrf_2)
         session_3 = c3.get('unipin_session', session_2)
 
-        # Step 4: ভাউচার পেজ লোড
-        headers4 = {
-            "cache-control": "max-age=0",
-            "upgrade-insecure-requests": "1",
-            "user-agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
-            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            "x-requested-with": "mark.via.gp",
-            "sec-fetch-site": "same-origin",
-            "sec-fetch-mode": "navigate",
-            "sec-fetch-user": "?1",
-            "sec-fetch-dest": "document",
-            "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Android WebView";v="146"',
-            "sec-ch-ua-mobile": "?1",
-            "sec-ch-ua-platform": '"Android"',
-            "referer": f"https://www.unipin.com/unibox/select_denom/{unique_id}?lg=en",
-            "accept-encoding": "gzip, deflate",
-            "accept-language": "en-US,en;q=0.9",
-            "cookie": f"region=BGD; __Host-XSRF-TOKEN={xsrf_3}; unipin_session={session_3}",
-            "priority": "u=0, i"
-        }
-        res4 = scraper.get(input_url, headers=headers4)
-
-        c4 = scraper.cookies.get_dict()
-        xsrf_4 = c4.get('__Host-XSRF-TOKEN', xsrf_3)
-        session_4 = c4.get('unipin_session', session_3)
-
-        # Step 5: সিরিয়াল ও পিন পার্স করা
+        # Step 4: সিরিয়াল ও পিন পার্স করা
         parts        = user_input.strip().split(" ")
         clean_serial = parts[0].replace("-", "")
         pin_parts    = parts[1].split("-")
-        # get_path_id() দিয়ে BDMB বা UPBD series অনুযায়ী সঠিক path_id নির্ধারণ
         path_id      = get_path_id(user_input)
 
-        # Step 6: ভাউচার পেজ GET
-        voucher_url = f"https://www.unipin.com/unibox/c/{unique_id}/{path_id}?b=1"
-        headers5 = {
-            "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Android WebView";v="146"',
-            "sec-ch-ua-mobile": "?1",
-            "sec-ch-ua-platform": '"Android"',
-            "upgrade-insecure-requests": "1",
-            "user-agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
-            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            "dnt": "1",
-            "x-requested-with": "mark.via.gp",
-            "sec-fetch-site": "none",
-            "sec-fetch-mode": "navigate",
-            "sec-fetch-user": "?1",
-            "sec-fetch-dest": "document",
-            "referer": f"https://www.unipin.com/unibox/d/{unique_id}?lg=en",
-            "accept-encoding": "gzip, deflate",
-            "accept-language": "en-US,en;q=0.9",
-            "cookie": f"region=BGD; __Host-XSRF-TOKEN={xsrf_4}; unipin_session={session_4}; _tt_enable_cookie=1; _ttp=01KMPH66ZA1R8C2S27SPNJ6ANS_.tt.1; _scid=bAa4BzLCsUkwN-VwL81TU50bdIxsEyT6; _scid_r=bAa4BzLCsUkwN-VwL81TU50bdIxsEyT6; _sc_cspv=https%3A%2F%2Ftr.snapchat.com",
-            "priority": "u=0, i"
-        }
-        res5 = scraper.get(voucher_url, headers=headers5)
-
-        c5 = scraper.cookies.get_dict()
-        xsrf_5 = c5.get('__Host-XSRF-TOKEN', xsrf_4)
-        session_5 = c5.get('unipin_session', session_4)
-
-        # Step 7: ভাউচার সাবমিট (Final POST)
+        # Step 5: ভাউচার সাবমিট (Final Direct POST)
         final_post_url = f"https://www.unipin.com/unibox/c/{unique_id}/{path_id}"
         headers6 = {
-            "cache-control": "max-age=0",
             "origin": "https://www.unipin.com",
-            "sec-ch-ua-platform": '"Android"',
-            "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Android WebView";v="146"',
-            "upgrade-insecure-requests": "1",
-            "sec-ch-ua-mobile": "?1",
-            "user-agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/146.0.7680.119 Mobile Safari/537.36",
-            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "user-agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/146.0.7680.119 Mobile Safari/537.36",
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "content-type": "application/x-www-form-urlencoded",
-            "x-requested-with": "mark.via.gp",
-            "sec-fetch-site": "same-origin",
-            "sec-fetch-mode": "navigate",
-            "sec-fetch-dest": "empty",
             "referer": f"https://www.unipin.com/unibox/c/{unique_id}/{path_id}?b=1",
-            "accept-encoding": "gzip, deflate",
-            "accept-language": "en-US,en;q=0.9",
-            "cookie": f"region=BGD; unipin_session={session_5}; __Host-XSRF-TOKEN={xsrf_5}",
-            "priority": "u=0, i"
+            "cookie": f"region=BGD; unipin_session={session_3}; __Host-XSRF-TOKEN={xsrf_3}"
         }
         final_payload = {
             "_token": meta_token,
