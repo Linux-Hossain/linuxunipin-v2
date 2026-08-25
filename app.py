@@ -157,6 +157,20 @@ def garena_payment_init(player_id: str) -> dict:
         browser={'browser': 'chrome', 'platform': 'android', 'desktop': False}
     )
 
+    # Step 0: ডাটাডোম অ্যান্টি-বট কুকি সংগ্রহ
+    datadome_val = ""
+    try:
+        dd_res = scraper.post("https://api-js.datadome.co/js/", data={
+            "ddk": "AE3F04AD3F0D3A462481A337485081",
+            "Referer": "https://shop.garena.my/",
+            "responseFormat": "json"
+        }, timeout=(5, 10))
+        dd_cookie_raw = dd_res.json().get("cookie", "")
+        if "datadome=" in dd_cookie_raw:
+            datadome_val = dd_cookie_raw.split("datadome=")[1].split(";")[0]
+    except Exception:
+        datadome_val = ""
+
     # Step 1: মূল পেজ থেকে mspid2 কুকি নাও
     scraper.get("https://shop.garena.my", timeout=(5, 10))
     mspid2 = scraper.cookies.get('mspid2', '')
@@ -181,9 +195,8 @@ def garena_payment_init(player_id: str) -> dict:
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Dest": "empty",
         "Referer": "https://shop.garena.my/",
-        "Accept-Encoding": "gzip, deflate, br",
         "Accept-Language": "en-US,en;q=0.9",
-        "Cookie": f"source=mb; region=SG; language=en; mspid2={mspid2}; datadome=nlGy58ylgnGLA7pbxHdEpTXIsdw5R8RBCix0cQMSBVv0awQIhiqELM4qjar2WzXtzFVXS1xAWKnpGquK491kPw2FqLg30LzNkG7O1RYBHswcrUGw5ASGX8JZLjT9inpl; _fbp=fb.1.1787337260137.26816900912074180"
+        "Cookie": f"source=mb; region=SG; language=en; mspid2={mspid2}; datadome={datadome_val}"
     }
     login_payload = {"app_id": 100067, "login_id": player_id}
 
@@ -198,7 +211,7 @@ def garena_payment_init(player_id: str) -> dict:
     except Exception:
         return {"status": "error", "message": "Login data could not be collected."}
 
-    new_datadome = scraper.cookies.get('datadome', '')
+    new_datadome = scraper.cookies.get('datadome', datadome_val) or datadome_val
     session_key = scraper.cookies.get('session_key', '')
 
     if not session_key:
@@ -212,16 +225,7 @@ def garena_payment_init(player_id: str) -> dict:
         "sec-ch-ua-platform": '"Android"',
         "User-Agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
         "Accept": "application/json, text/plain, */*",
-        "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Android WebView";v="146"',
-        "sec-ch-ua-mobile": "?1",
-        "X-Requested-With": "mark.via.gp",
-        "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Dest": "empty",
-        "Referer": "https://shop.garena.my/?app=100067&channel=202953",
-        "accept-encoding": "gzip, deflate",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cookie": f"source=mb; region=MY; language=en; mspid2={mspid2}; _fbp=fb.1.1774388514116.22736515472593712; __csrf__=zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7; datadome={new_datadome}; session_key={session_key}"
+        "Cookie": f"source=mb; region=MY; language=en; mspid2={mspid2}; __csrf__=zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7; datadome={new_datadome}; session_key={session_key}"
     }
 
     try:
