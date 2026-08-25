@@ -147,6 +147,29 @@ def log_data(filename: str, data: dict):
 
 # ─── Garena Payment Init ──────────────────────────────────────────────────────
 
+# DataDome Token Cache (5 mins TTL)
+_cached_datadome = ""
+_cached_datadome_time = 0
+
+def get_cached_datadome_token(scraper) -> str:
+    global _cached_datadome, _cached_datadome_time
+    now = time.time()
+    if not _cached_datadome or (now - _cached_datadome_time) > 300:
+        try:
+            dd_res = scraper.post("https://api-js.datadome.co/js/", data={
+                "ddk": "AE3F04AD3F0D3A462481A337485081",
+                "Referer": "https://shop.garena.my/",
+                "responseFormat": "json"
+            }, timeout=(5, 10))
+            dd_cookie_raw = dd_res.json().get("cookie", "")
+            if "datadome=" in dd_cookie_raw:
+                _cached_datadome = dd_cookie_raw.split("datadome=")[1].split(";")[0]
+                _cached_datadome_time = now
+        except Exception:
+            pass
+    return _cached_datadome
+
+
 def garena_payment_init(player_id: str) -> dict:
     """
     Garena শপে লগইন করে UniPin পেমেন্ট ইনিট URL সংগ্রহ করে।
@@ -157,19 +180,8 @@ def garena_payment_init(player_id: str) -> dict:
         browser={'browser': 'chrome', 'platform': 'android', 'desktop': False}
     )
 
-    # Step 0: ডাটাডোম অ্যান্টি-বট কুকি সংগ্রহ
-    datadome_val = ""
-    try:
-        dd_res = scraper.post("https://api-js.datadome.co/js/", data={
-            "ddk": "AE3F04AD3F0D3A462481A337485081",
-            "Referer": "https://shop.garena.my/",
-            "responseFormat": "json"
-        }, timeout=(5, 10))
-        dd_cookie_raw = dd_res.json().get("cookie", "")
-        if "datadome=" in dd_cookie_raw:
-            datadome_val = dd_cookie_raw.split("datadome=")[1].split(";")[0]
-    except Exception:
-        datadome_val = ""
+    # Step 0: ডাটাডোম অ্যান্টি-বট কুকি সংগ্রহ (ইন-মেমোরি ক্যাশ্ড)
+    datadome_val = get_cached_datadome_token(scraper)
 
     # Step 1: মূল পেজ থেকে mspid2 কুকি নাও
     scraper.get("https://shop.garena.my", timeout=(5, 10))
