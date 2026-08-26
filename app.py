@@ -631,7 +631,6 @@ def garena_payment_init_batch(player_id: str, count: int = 1, session_id: str | 
                 "region": login_region
             }
         elif attempt == 0:
-            time.sleep(0.2)
             time.sleep(0.15)
             continue
         return {"status": "error", "message": "Failed to fetch payment init URLs"}
@@ -643,16 +642,11 @@ def garena_payment_init_batch(player_id: str, count: int = 1, session_id: str | 
 
 def execute_redeem(input_url: str, packageId: str, user_input: str, session_id: str | None = None) -> dict:
     """
-    UniPin-এ ভাউচার সিরিয়াল ও পিন সাবমিট করে রিডিম করে (Ultra-Fast 2-Step Flow with HTTP Keep-Alive).
     UniPin-এ ভাউচার সিরিয়াল ও পিন সাবমিট করে রিডিম করে।
     Persistent Session Singleton ব্যবহার করে warm TCP connection-এ (<2s target).
     Returns: {"status": "success", "details": {...}}
              or {"status": "error", "message": ...}
     """
-    session = requests.Session()
-    adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10)
-    session.mount('https://', adapter)
-    session.mount('http://', adapter)
     # Persistent singleton session (warm TCP connection, no per-call handshake)
     session = _get_unipin_session()
 
@@ -667,8 +661,7 @@ def execute_redeem(input_url: str, packageId: str, user_input: str, session_id: 
     unique_id = match.group(1)
 
     try:
-        # Step 1: সরাসরি Denomination সিলেকশন পেজ লোড
-        # Step 1: Denomination পেজ লোড (warm connection → ~300ms instead of ~700ms)
+        # Step 1: Denomination পেজ লোড
         denom_page_url = f"https://www.unipin.com/unibox/select_denom/{unique_id}?lg=en"
         headers_get = {
             "upgrade-insecure-requests": "1",
@@ -676,7 +669,6 @@ def execute_redeem(input_url: str, packageId: str, user_input: str, session_id: 
             "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "referer": "https://shop.garena.my/"
         }
-        res_denom = session.get(denom_page_url, headers=headers_get, timeout=(4, 8))
         res_denom = session.get(denom_page_url, headers=headers_get, timeout=(3, 7))
 
         # Fast Regex CSRF Token Extraction
@@ -691,7 +683,6 @@ def execute_redeem(input_url: str, packageId: str, user_input: str, session_id: 
         if not meta_token:
             return {"status": "error", "message": "csrf-token meta tag not found!"}
 
-        # Step 2: Denomination সিলেক্ট করে POST
         # Step 2: Denomination POST
         headers_post = {
             "origin": "https://www.unipin.com",
@@ -700,10 +691,9 @@ def execute_redeem(input_url: str, packageId: str, user_input: str, session_id: 
             "referer": denom_page_url
         }
         payload_denom = {"_token": meta_token, "denomination": DENOM_LIST[packageId]['payload']}
-        res_post_denom = session.post(denom_page_url, data=payload_denom, headers=headers_post, timeout=(4, 8))
         res_post_denom = session.post(denom_page_url, data=payload_denom, headers=headers_post, timeout=(2, 5))
 
-        # Step 3: সিরিয়াল ও পিন পার্স
+        # Step 3: Serial ও PIN parse
         parts = user_input.strip().split(" ")
         if len(parts) < 2:
             return {"status": "error", "message": "Invalid code format. Expected 'SERIAL PIN'"}
@@ -713,7 +703,7 @@ def execute_redeem(input_url: str, packageId: str, user_input: str, session_id: 
             return {"status": "error", "message": "Invalid PIN format. Expected 4 PIN parts separated by hyphens"}
         path_id = get_path_id(user_input)
 
-        # Step 4: সরাসরি ভাউচার সাবমিট
+        # Step 4: Final Voucher Submit
         final_post_url = f"https://www.unipin.com/unibox/c/{unique_id}/{path_id}"
         headers_final = {
             "origin": "https://www.unipin.com",
@@ -731,7 +721,6 @@ def execute_redeem(input_url: str, packageId: str, user_input: str, session_id: 
             "pin_4": pin_parts[3]
         }
 
-        final_res = session.post(final_post_url, data=final_payload, headers=headers_final, timeout=(4, 8))
         final_res = session.post(final_post_url, data=final_payload, headers=headers_final, timeout=(2, 6))
 
         # Step 5: রেজাল্ট দ্রুত পার্স (Fast Regex + Fallback)
