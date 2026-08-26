@@ -1,4 +1,6 @@
-Flask==3.1.0
+fastapi==0.115.8
+uvicorn==0.34.0
+httpx==0.28.1
 cloudscraper==1.2.71
 beautifulsoup4==4.13.3
 requests==2.32.3
