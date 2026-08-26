@@ -11,7 +11,7 @@ import uuid
 import time
 import threading
 import concurrent.futures
-import requests as http_requests
+import requests
 import httpx
 from urllib.parse import urlencode
 
@@ -56,6 +56,7 @@ WEBSHARE_PORT = os.getenv("WEBSHARE_PORT", "80")
 WEBSHARE_USER = os.getenv("WEBSHARE_USER", "cghgkxjs-sg")
 WEBSHARE_PASS = os.getenv("WEBSHARE_PASS", "9uvtmzg255yk")
 WEBSHARE_COUNTRY = os.getenv("WEBSHARE_COUNTRY", "sg").lower()
+WEBSHARE_API_KEY = os.getenv("WEBSHARE_API_KEY", "xqcde8q9aa19y99zjqaq896uysy09u38b1arsb5l").strip()
 PROXY_MODE = os.getenv("PROXY_MODE", "garena_only").lower()  # 'garena_only' or 'all'
 
 
@@ -247,126 +248,143 @@ def get_cached_datadome_token(scraper) -> str:
     return _cached_datadome
 
 
+# ─── Garena Pay Init URL Cache (per player_id) ────────────────────────────────
+# Garena session_key + pay/init URL প্রতি 8 মিনিট পর্যন্ত valid থাকে।
+# Same player_id-এর repeat calls-এ Garena login (~2.5s) বাদ দিয়ে
+# cached URL সরাসরি return করা হয় (~0ms).
+
+_garena_init_cache: dict[str, dict] = {}  # {player_id: {url, nickname, region, ts}}
+_garena_init_cache_lock = threading.Lock()
+_GARENA_CACHE_TTL = 8 * 60  # 8 minutes in seconds
+
+def _get_garena_cached(player_id: str) -> dict | None:
+    with _garena_init_cache_lock:
+        entry = _garena_init_cache.get(player_id)
+        if entry and (time.time() - entry["ts"]) < _GARENA_CACHE_TTL:
+            return entry
+        return None
+
+def _set_garena_cached(player_id: str, url: str, nickname: str, region: str):
+    with _garena_init_cache_lock:
+        _garena_init_cache[player_id] = {
+            "url": url,
+            "nickname": nickname,
+            "region": region,
+            "ts": time.time()
+        }
+
+def _invalidate_garena_cache(player_id: str):
+    with _garena_init_cache_lock:
+        _garena_init_cache.pop(player_id, None)
+
+
+# ─── CloudScraper Pre-Warm Pool ───────────────────────────────────────────────
+# প্রতিটি কলে নতুন TLS handshake (~400ms) বাদ দিতে pool রাখা হয়।
+
+import queue as _queue
+
+_SCRAPER_POOL_SIZE = 3
+_scraper_pool: _queue.Queue = _queue.Queue()
+
+def _make_scraper() -> cloudscraper.CloudScraper:
+    return cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'android', 'desktop': False})
+
+def _fill_scraper_pool():
+    for _ in range(_SCRAPER_POOL_SIZE):
+        try:
+            _scraper_pool.put_nowait(_make_scraper())
+        except _queue.Full:
+            break
+
+threading.Thread(target=_fill_scraper_pool, daemon=True).start()
+
+def _checkout_scraper() -> cloudscraper.CloudScraper:
+    try:
+        return _scraper_pool.get_nowait()
+    except _queue.Empty:
+        return _make_scraper()
+
+def _checkin_scraper(sc: cloudscraper.CloudScraper):
+    sc.cookies.clear()
+    if _scraper_pool.qsize() < _SCRAPER_POOL_SIZE:
+        try:
+            _scraper_pool.put_nowait(sc)
+        except _queue.Full:
+            pass
+
+
+# ─── Persistent UniPin HTTP Session (Singleton) ───────────────────────────────
+# UniPin-এ প্রতিটি কলে নতুন TCP+TLS handshake (~700ms) বাদ দিতে
+# module-level session singleton রাখা হয়।
+
+_unipin_session: requests.Session | None = None
+_unipin_session_lock = threading.Lock()
+
+def _get_unipin_session() -> requests.Session:
+    global _unipin_session
+    if _unipin_session is not None:
+        return _unipin_session
+    with _unipin_session_lock:
+        if _unipin_session is None:
+            s = requests.Session()
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=10,
+                pool_maxsize=20,
+                max_retries=0
+            )
+            s.mount('https://', adapter)
+            s.mount('http://', adapter)
+            _unipin_session = s
+    return _unipin_session
+
+def _prewarm_unipin():
+    try:
+        s = _get_unipin_session()
+        s.head("https://www.unipin.com/", timeout=(3, 5), headers={
+            "user-agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36"
+        })
+    except Exception:
+        pass
+
+threading.Thread(target=_prewarm_unipin, daemon=True).start()
+
+
 def garena_payment_init(player_id: str, session_id: str | None = None) -> dict:
     """
-    Garena শপে লগইন করে UniPin পেমেন্ট ইনিট URL সংগ্রহ করে (Direct High-Speed Flow)।
+    Garena শপে লগইন করে UniPin পেমেন্ট ইনিট URL সংগ্রহ করে (High-Speed Session Pool Flow).
+    Garena শপে লগইন করে UniPin পেমেন্ট ইনিট URL সংগ্রহ করে।
+    CloudScraper Pool থেকে pre-warmed scraper ব্যবহার করে (~900ms target).
+    Same player_id-এর repeat calls-এ cached URL ব্যবহার করে (<50ms).
     Returns: {"status": "success", "url": ..., "nickname": ..., "region": ...}
              or {"status": "error", "message": ...}
     """
-    scraper = cloudscraper.create_scraper(
-        browser={'browser': 'chrome', 'platform': 'android', 'desktop': False}
-    )
-    proxy_dict = build_webshare_proxy(session_id=session_id)
-    if proxy_dict:
-        scraper.proxies = proxy_dict
-
-    # Step 0: ডাটাডোম অ্যান্টি-বট কুকি সংগ্রহ (ইন-মেমোরি ক্যাশ্ড)
-    datadome_val = get_cached_datadome_token(scraper)
-    mspid2 = uuid.uuid4().hex
-
-    # Step 1: সরাসরি Player ID দিয়ে লগইন
-    login_url = "https://shop.garena.my/api/auth/player_id_login"
-    login_headers = {
-        "Host": "shop.garena.my",
-        "Connection": "keep-alive",
-        "sec-ch-ua-platform": '"Android"',
-        "User-Agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.124 Mobile Safari/537.36",
-        "sec-ch-ua": '"Not;A=Brand";v="8", "Chromium";v="150", "Android WebView";v="150"',
-        "Content-Type": "application/json",
-        "sec-ch-ua-mobile": "?1",
-        "Accept": "*/*",
-        "Origin": "https://shop.garena.my",
-        "X-Requested-With": "mark.via.gp",
-        "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Dest": "empty",
-        "Referer": "https://shop.garena.my/",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cookie": f"source=mb; region=SG; language=en; mspid2={mspid2}; datadome={datadome_val}"
-    }
-    login_payload = {"app_id": 100067, "login_id": player_id}
-
-    try:
-        login_res = scraper.post(login_url, headers=login_headers, json=login_payload, timeout=(4, 8))
-        login_data = login_res.json()
-        login_nickname = login_data.get('nickname', '')
-        login_region = login_data.get('region', '')
-
-        if not login_nickname:
-            return {"status": "error", "message": "Invalid Player ID or empty nickname"}
-    except Exception:
-        return {"status": "error", "message": "Login data could not be collected."}
-
-    new_datadome = scraper.cookies.get('datadome', datadome_val) or datadome_val
-    session_key = scraper.cookies.get('session_key', '')
-
-    if not session_key:
-        return {"status": "error", "message": "Session Key not found."}
-
-    # Step 2: Payment Init (Direct Pay Init without unnecessary preflight)
-    pay_init_url = "https://shop.garena.my/api/shop/pay/init?region=MY&language=en"
-    pay_headers = {
-        "Host": "shop.garena.my",
-        "Connection": "keep-alive",
-        "sec-ch-ua-platform": '"Android"',
-        "x-csrf-token": "zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7",
-        "User-Agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Content-Type": "application/json",
-        "Cookie": f"source=mb; region=MY; language=en; mspid2={mspid2}; session_key={session_key}; datadome={new_datadome}; __csrf__=zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7"
-    }
-    pay_payload = {
-        "app_id": 100067,
-        "packed_role_id": 0,
-        "channel_id": 221179,
-        "service": "mb",
-        "channel_data": {"need_return": True, "payment_channel": None},
-        "revamp_experiment": {
-            "session_id": mspid2,
-            "group": "treatment2",
-            "service_version": "mshop_frontend_20260324",
-            "source": "mb",
-            "domain": "shop.garena.my"
+    # ── Cache Hit: Same player_id-এর আগের URL এখনও valid হলে সরাসরি return
+    cached = _get_garena_cached(player_id)
+    if cached:
+        return {
+            "status": "success",
+            "url": cached["url"],
+            "nickname": cached["nickname"],
+            "region": cached["region"],
+            "_cached": True
         }
-    }
-
-    try:
-        final_res = scraper.post(pay_init_url, headers=pay_headers, json=pay_payload, timeout=(4, 8))
-        init_url = final_res.json().get('init', {}).get('url', '')
-        if init_url:
-            return {"status": "success", "url": init_url, "nickname": login_nickname, "region": login_region}
-        return {"status": "error", "message": "Init URL not found in response"}
-    except Exception:
-        return {"status": "error", "message": "Failed to fetch payment init URL"}
-
-
-def garena_payment_init_batch(player_id: str, count: int = 1, session_id: str | None = None) -> dict:
-    """
-    Garena শপে ১ বার লগইন করে একসাথে count-সংখ্যক UniPin পেমেন্ট ইনিট URL সংগ্রহ করে।
-    (এতে অ্যাকাউন্ট কনকারেন্সি রেস-কন্ডিশন ছাড়াই সব কোডের URL ১.৫-২ সেকেন্ডে রেডি হয়)
-    """
-    if count <= 1:
-        res = garena_payment_init(player_id, session_id=session_id)
-        if res.get("status") == "success":
-            return {
-                "status": "success",
-                "urls": [res.get("url")],
-                "nickname": res.get("nickname"),
-                "region": res.get("region")
-            }
-        return res
 
     for attempt in range(2):
-        scraper = cloudscraper.create_scraper(
-            browser={'browser': 'chrome', 'platform': 'android', 'desktop': False}
-        )
-        proxy_dict = build_webshare_proxy(session_id=session_id or f"batch_{attempt}")
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=5, pool_maxsize=5)
+        session.mount('https://', adapter)
+        session.mount('http://', adapter)
+
+        scraper = _checkout_scraper()
+        proxy_dict = build_webshare_proxy(session_id=session_id or f"init_{attempt}")
         if proxy_dict:
+            session.proxies = proxy_dict
             scraper.proxies = proxy_dict
 
-        datadome_val = get_cached_datadome_token(scraper)
+        datadome_val = get_cached_datadome_token(None)
         mspid2 = uuid.uuid4().hex
 
+        # Step 1: সরাসরি Player ID দিয়ে লগইন
         login_url = "https://shop.garena.my/api/auth/player_id_login"
         login_headers = {
             "Host": "shop.garena.my",
@@ -389,30 +407,180 @@ def garena_payment_init_batch(player_id: str, count: int = 1, session_id: str | 
         login_payload = {"app_id": 100067, "login_id": player_id}
 
         try:
-            login_res = scraper.post(login_url, headers=login_headers, json=login_payload, timeout=(4, 8))
+            login_res = session.post(login_url, headers=login_headers, json=login_payload, timeout=(4, 8))
+            login_res = scraper.post(login_url, headers=login_headers, json=login_payload, timeout=(2.5, 6))
+            login_data = login_res.json()
+            login_nickname = login_data.get('nickname', '')
+            login_region = login_data.get('region', '')
+
+            if not login_nickname:
+                _checkin_scraper(scraper)
+                if attempt == 0:
+                    time.sleep(0.2)
+                    time.sleep(0.15)
+                    continue
+                return {"status": "error", "message": "Invalid Player ID or empty nickname"}
+        except Exception:
+            _checkin_scraper(scraper)
+            if attempt == 0:
+                time.sleep(0.2)
+                time.sleep(0.15)
+                continue
+            return {"status": "error", "message": "Login data could not be collected."}
+
+        new_datadome = session.cookies.get('datadome', datadome_val) or datadome_val
+        session_key = session.cookies.get('session_key', '')
+        new_datadome = scraper.cookies.get('datadome', datadome_val) or datadome_val
+        session_key = scraper.cookies.get('session_key', '')
+
+        if not session_key:
+            _checkin_scraper(scraper)
+            if attempt == 0:
+                time.sleep(0.2)
+                time.sleep(0.15)
+                continue
+            return {"status": "error", "message": "Session Key not found."}
+
+        # Step 2: Payment Init (Keep-Alive Reused TLS Connection)
+        pay_init_url = "https://shop.garena.my/api/shop/pay/init?region=MY&language=en"
+        pay_headers = {
+            "Host": "shop.garena.my",
+            "Connection": "keep-alive",
+            "sec-ch-ua-platform": '"Android"',
+            "x-csrf-token": "zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7",
+            "User-Agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "Cookie": f"source=mb; region=MY; language=en; mspid2={mspid2}; session_key={session_key}; datadome={new_datadome}; __csrf__=zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7"
+        }
+        pay_payload = {
+            "app_id": 100067,
+            "packed_role_id": 0,
+            "channel_id": 221179,
+            "service": "mb",
+            "channel_data": {"need_return": True, "payment_channel": None},
+            "revamp_experiment": {
+                "session_id": mspid2,
+                "group": "treatment2",
+                "service_version": "mshop_frontend_20260324",
+                "source": "mb",
+                "domain": "shop.garena.my"
+            }
+        }
+
+        try:
+            final_res = session.post(pay_init_url, headers=pay_headers, json=pay_payload, timeout=(4, 8))
+            final_res = scraper.post(pay_init_url, headers=pay_headers, json=pay_payload, timeout=(2, 5))
+            init_url = final_res.json().get('init', {}).get('url', '')
+            _checkin_scraper(scraper)
+            if init_url:
+                # ── Cache Store: ৮ মিনিটের জন্য cache রাখা হয়
+                _set_garena_cached(player_id, init_url, login_nickname, login_region)
+                return {"status": "success", "url": init_url, "nickname": login_nickname, "region": login_region}
+            if attempt == 0:
+                time.sleep(0.2)
+                time.sleep(0.15)
+                continue
+            return {"status": "error", "message": "Init URL not found in response"}
+        except Exception:
+            _checkin_scraper(scraper)
+            if attempt == 0:
+                time.sleep(0.2)
+                time.sleep(0.15)
+                continue
+            return {"status": "error", "message": "Failed to fetch payment init URL"}
+
+    return {"status": "error", "message": "Garena init failed"}
+
+
+def garena_payment_init_batch(player_id: str, count: int = 1, session_id: str | None = None) -> dict:
+    """
+    Garena শপে ১ বার লগইন করে একসাথে count-সংখ্যক UniPin পেমেন্ট ইনিট URL সংগ্রহ করে (High-Speed Session Pool Flow).
+    Garena শপে ১ বার লগইন করে একসাথে count-সংখ্যক UniPin পেমেন্ট ইনিট URL সংগ্রহ করে।
+    CloudScraper Pool থেকে pre-warmed scraper ব্যবহার করে।
+    """
+    if count <= 1:
+        res = garena_payment_init(player_id, session_id=session_id)
+        if res.get("status") == "success":
+            return {
+                "status": "success",
+                "urls": [res.get("url")],
+                "nickname": res.get("nickname"),
+                "region": res.get("region")
+            }
+        return res
+
+    for attempt in range(2):
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10)
+        session.mount('https://', adapter)
+        session.mount('http://', adapter)
+
+        scraper = _checkout_scraper()
+        proxy_dict = build_webshare_proxy(session_id=session_id or f"batch_{attempt}")
+        if proxy_dict:
+            session.proxies = proxy_dict
+            scraper.proxies = proxy_dict
+
+        datadome_val = get_cached_datadome_token(None)
+        mspid2 = uuid.uuid4().hex
+
+        login_url = "https://shop.garena.my/api/auth/player_id_login"
+        login_headers = {
+            "Host": "shop.garena.my",
+            "Connection": "keep-alive",
+            "sec-ch-ua-platform": '"Android"',
+            "User-Agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.124 Mobile Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.124 Mobile Safari/150.0.0.0",
+            "sec-ch-ua": '"Not;A=Brand";v="8", "Chromium";v="150", "Android WebView";v="150"',
+            "Content-Type": "application/json",
+            "sec-ch-ua-mobile": "?1",
+            "Accept": "*/*",
+            "Origin": "https://shop.garena.my",
+            "X-Requested-With": "mark.via.gp",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Dest": "empty",
+            "Referer": "https://shop.garena.my/",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cookie": f"source=mb; region=SG; language=en; mspid2={mspid2}; datadome={datadome_val}"
+        }
+        login_payload = {"app_id": 100067, "login_id": player_id}
+
+        try:
+            login_res = session.post(login_url, headers=login_headers, json=login_payload, timeout=(4, 8))
+            login_res = scraper.post(login_url, headers=login_headers, json=login_payload, timeout=(2.5, 6))
             login_data = login_res.json()
             login_nickname = login_data.get('nickname', '')
             login_region = login_data.get('region', '')
             if not login_nickname:
+                _checkin_scraper(scraper)
                 if attempt == 0:
-                    time.sleep(0.3)
+                    time.sleep(0.2)
+                    time.sleep(0.15)
                     continue
                 return {"status": "error", "message": "Invalid Player ID or empty nickname"}
         except Exception:
+            _checkin_scraper(scraper)
             if attempt == 0:
-                time.sleep(0.3)
+                time.sleep(0.2)
+                time.sleep(0.15)
                 continue
             return {"status": "error", "message": "Login data could not be collected."}
 
+        new_datadome = session.cookies.get('datadome', datadome_val) or datadome_val
+        session_key = session.cookies.get('session_key', '')
         new_datadome = scraper.cookies.get('datadome', datadome_val) or datadome_val
         session_key = scraper.cookies.get('session_key', '')
         if not session_key:
+            _checkin_scraper(scraper)
             if attempt == 0:
-                time.sleep(0.3)
+                time.sleep(0.2)
+                time.sleep(0.15)
                 continue
             return {"status": "error", "message": "Session Key not found."}
 
-        # Parallel pay inits for `count` URLs (Direct without preflight)
+        # Parallel pay inits for `count` URLs (Reused Keep-Alive Connection Pool)
         pay_init_url = "https://shop.garena.my/api/shop/pay/init?region=MY&language=en"
         pay_headers = {
             "Host": "shop.garena.my",
@@ -441,7 +609,8 @@ def garena_payment_init_batch(player_id: str, count: int = 1, session_id: str | 
 
         def fetch_single_pay_url(idx_i):
             try:
-                final_res = scraper.post(pay_init_url, headers=pay_headers, json=pay_payload, timeout=(4, 8))
+                final_res = session.post(pay_init_url, headers=pay_headers, json=pay_payload, timeout=(4, 8))
+                final_res = scraper.post(pay_init_url, headers=pay_headers, json=pay_payload, timeout=(2, 5))
                 return final_res.json().get('init', {}).get('url', '')
             except Exception:
                 return ''
@@ -449,15 +618,12 @@ def garena_payment_init_batch(player_id: str, count: int = 1, session_id: str | 
         with concurrent.futures.ThreadPoolExecutor(max_workers=count) as executor:
             urls = list(executor.map(fetch_single_pay_url, range(count)))
 
+        _checkin_scraper(scraper)
         valid_urls = [u for u in urls if u]
-        if len(valid_urls) == count:
-            return {
-                "status": "success",
-                "urls": urls,
-                "nickname": login_nickname,
-                "region": login_region
-            }
-        elif len(valid_urls) > 0:
+        if len(valid_urls) == count or len(valid_urls) > 0:
+            # ── Cache Store: প্রথম URL cache-এ রাখা হয় পরের single calls-এর জন্য
+            if valid_urls:
+                _set_garena_cached(player_id, valid_urls[0], login_nickname, login_region)
             return {
                 "status": "success",
                 "urls": urls,
@@ -465,7 +631,8 @@ def garena_payment_init_batch(player_id: str, count: int = 1, session_id: str | 
                 "region": login_region
             }
         elif attempt == 0:
-            time.sleep(0.3)
+            time.sleep(0.2)
+            time.sleep(0.15)
             continue
         return {"status": "error", "message": "Failed to fetch payment init URLs"}
 
@@ -476,15 +643,23 @@ def garena_payment_init_batch(player_id: str, count: int = 1, session_id: str | 
 
 def execute_redeem(input_url: str, packageId: str, user_input: str, session_id: str | None = None) -> dict:
     """
-    UniPin-এ ভাউচার সিরিয়াল ও পিন সাবমিট করে রিডিম করে (Ultra-Fast 2-Step Flow)।
+    UniPin-এ ভাউচার সিরিয়াল ও পিন সাবমিট করে রিডিম করে (Ultra-Fast 2-Step Flow with HTTP Keep-Alive).
+    UniPin-এ ভাউচার সিরিয়াল ও পিন সাবমিট করে রিডিম করে।
+    Persistent Session Singleton ব্যবহার করে warm TCP connection-এ (<2s target).
     Returns: {"status": "success", "details": {...}}
              or {"status": "error", "message": ...}
     """
-    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'android', 'desktop': False})
+    session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10)
+    session.mount('https://', adapter)
+    session.mount('http://', adapter)
+    # Persistent singleton session (warm TCP connection, no per-call handshake)
+    session = _get_unipin_session()
+
     if PROXY_MODE == "all":
         proxy_dict = build_webshare_proxy(session_id=session_id)
         if proxy_dict:
-            scraper.proxies = proxy_dict
+            session.proxies = proxy_dict
 
     match = re.search(r'/unibox/d/([^?]+)', input_url)
     if not match:
@@ -492,7 +667,8 @@ def execute_redeem(input_url: str, packageId: str, user_input: str, session_id: 
     unique_id = match.group(1)
 
     try:
-        # Step 1: সরাসরি Denomination সিলেকশন পেজ লোড (মাঝের অপ্রয়োজনীয় হোমপেজ GET বাদ)
+        # Step 1: সরাসরি Denomination সিলেকশন পেজ লোড
+        # Step 1: Denomination পেজ লোড (warm connection → ~300ms instead of ~700ms)
         denom_page_url = f"https://www.unipin.com/unibox/select_denom/{unique_id}?lg=en"
         headers_get = {
             "upgrade-insecure-requests": "1",
@@ -500,7 +676,8 @@ def execute_redeem(input_url: str, packageId: str, user_input: str, session_id: 
             "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "referer": "https://shop.garena.my/"
         }
-        res_denom = scraper.get(denom_page_url, headers=headers_get, timeout=(4, 8))
+        res_denom = session.get(denom_page_url, headers=headers_get, timeout=(4, 8))
+        res_denom = session.get(denom_page_url, headers=headers_get, timeout=(3, 7))
 
         # Fast Regex CSRF Token Extraction
         match_csrf = re.search(r'name=["\']csrf-token["\']\s+content=["\']([^"\']+)["\']', res_denom.text) or re.search(r'content=["\']([^"\']+)["\']\s+name=["\']csrf-token["\']', res_denom.text)
@@ -515,6 +692,7 @@ def execute_redeem(input_url: str, packageId: str, user_input: str, session_id: 
             return {"status": "error", "message": "csrf-token meta tag not found!"}
 
         # Step 2: Denomination সিলেক্ট করে POST
+        # Step 2: Denomination POST
         headers_post = {
             "origin": "https://www.unipin.com",
             "content-type": "application/x-www-form-urlencoded",
@@ -522,7 +700,8 @@ def execute_redeem(input_url: str, packageId: str, user_input: str, session_id: 
             "referer": denom_page_url
         }
         payload_denom = {"_token": meta_token, "denomination": DENOM_LIST[packageId]['payload']}
-        scraper.post(denom_page_url, data=payload_denom, headers=headers_post, timeout=(4, 8))
+        res_post_denom = session.post(denom_page_url, data=payload_denom, headers=headers_post, timeout=(4, 8))
+        res_post_denom = session.post(denom_page_url, data=payload_denom, headers=headers_post, timeout=(2, 5))
 
         # Step 3: সিরিয়াল ও পিন পার্স
         parts = user_input.strip().split(" ")
@@ -534,7 +713,7 @@ def execute_redeem(input_url: str, packageId: str, user_input: str, session_id: 
             return {"status": "error", "message": "Invalid PIN format. Expected 4 PIN parts separated by hyphens"}
         path_id = get_path_id(user_input)
 
-        # Step 4: সরাসরি ভাউচার সাবমিট (Final POST — মাঝের ৩টি অপ্রয়োজনীয় GET পেজ বাদ)
+        # Step 4: সরাসরি ভাউচার সাবমিট
         final_post_url = f"https://www.unipin.com/unibox/c/{unique_id}/{path_id}"
         headers_final = {
             "origin": "https://www.unipin.com",
@@ -552,7 +731,8 @@ def execute_redeem(input_url: str, packageId: str, user_input: str, session_id: 
             "pin_4": pin_parts[3]
         }
 
-        final_res = scraper.post(final_post_url, data=urlencode(final_payload), headers=headers_final, timeout=(4, 8))
+        final_res = session.post(final_post_url, data=final_payload, headers=headers_final, timeout=(4, 8))
+        final_res = session.post(final_post_url, data=final_payload, headers=headers_final, timeout=(2, 6))
 
         # Step 5: রেজাল্ট দ্রুত পার্স (Fast Regex + Fallback)
         if "Transaction successful" in final_res.text:
@@ -1096,6 +1276,57 @@ async def api_proxy_status(request: Request):
         }, status_code=500)
 
 
+@app.get("/api/proxy/usage")
+async def api_proxy_usage(request: Request):
+    """
+    Webshare Proxy লাইভ ইউসেজ, ব্যবহৃত MB, মোট রিকোয়েস্ট এবং সাবস্ক্রিপশন তথ্য।
+    """
+    if not WEBSHARE_API_KEY:
+        return JSONResponse(content={"status": "error", "message": "WEBSHARE_API_KEY is not configured in .env"}, status_code=400)
+
+    headers = {"Authorization": f"Token {WEBSHARE_API_KEY}"}
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            stats_resp = await client.get("https://proxy.webshare.io/api/v2/stats/aggregate/", headers=headers)
+            sub_resp = await client.get("https://proxy.webshare.io/api/v2/subscription/", headers=headers)
+
+            stats_data = stats_resp.json() if stats_resp.status_code == 200 else {}
+            sub_data = sub_resp.json() if sub_resp.status_code == 200 else {}
+
+            bytes_used = stats_data.get("bandwidth_total", 0)
+            mb_used = round(bytes_used / (1024 * 1024), 3)
+            gb_used = round(bytes_used / (1024 * 1024 * 1024), 4)
+
+            req_total = stats_data.get("requests_total", 0)
+            req_succ = stats_data.get("requests_successful", 0)
+            req_fail = stats_data.get("requests_failed", 0)
+            succ_rate = f"{(req_succ / max(1, req_total)) * 100:.1f}%" if req_total > 0 else "100.0%"
+
+            # Formatting start/end dates
+            start_raw = sub_data.get("start_date", "")
+            end_raw = sub_data.get("end_date", "")
+            start_fmt = start_raw.split("T")[0] if "T" in start_raw else start_raw
+            end_fmt = end_raw.split("T")[0] if "T" in end_raw else end_raw
+
+            return JSONResponse(content={
+                "status": "success",
+                "bandwidth_used_bytes": bytes_used,
+                "bandwidth_used_mb": f"{mb_used} MB",
+                "bandwidth_used_gb": f"{gb_used} GB",
+                "requests_total": req_total,
+                "requests_successful": req_succ,
+                "requests_failed": req_fail,
+                "success_rate": succ_rate,
+                "subscription_start": start_fmt,
+                "subscription_end": end_fmt,
+                "will_renew": sub_data.get("will_renew", True),
+                "proxy_mode": PROXY_MODE,
+                "country": WEBSHARE_COUNTRY.upper()
+            })
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": f"Failed to fetch Webshare stats: {str(e)}"}, status_code=500)
+
+
 
 # ─── Home / Dashboard ─────────────────────────────────────────────────────────
 
@@ -1246,6 +1477,61 @@ HTML_CONTENT = """<!DOCTYPE html>
 
             <!-- Right Content Area -->
             <main class="lg:col-span-3 space-y-8">
+                
+                <!-- Webshare Proxy Live Usage Monitor Widget -->
+                <section id="proxy-usage" class="glass-card p-6 rounded-2xl glow-emerald border border-emerald-500/30">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4 mb-5">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-xl">
+                                🌐
+                            </div>
+                            <div>
+                                <h2 class="text-lg font-display font-bold text-slate-100 flex items-center gap-2">
+                                    Webshare Proxy <span class="text-gradient font-black">Live Usage</span>
+                                </h2>
+                                <p class="text-xs text-slate-400">Real-time bandwidth consumption, request metrics & Singapore rotating IP status</p>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button onclick="loadProxyUsage()" id="btn-refresh-proxy" class="px-3.5 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-semibold transition-all flex items-center gap-1.5">
+                                🔄 Refresh Usage
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Usage Stat Cards -->
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                        <div class="p-4 bg-slate-900/80 rounded-xl border border-slate-800/80">
+                            <span class="text-[11px] font-mono text-slate-400 uppercase tracking-wider block mb-1">Used Bandwidth</span>
+                            <span id="stat-bandwidth-mb" class="text-xl font-bold font-mono text-emerald-400">Loading...</span>
+                            <span id="stat-bandwidth-bytes" class="text-[10px] text-slate-500 block mt-0.5">...</span>
+                        </div>
+                        <div class="p-4 bg-slate-900/80 rounded-xl border border-slate-800/80">
+                            <span class="text-[11px] font-mono text-slate-400 uppercase tracking-wider block mb-1">Total Requests</span>
+                            <span id="stat-requests-total" class="text-xl font-bold font-mono text-cyan-400">Loading...</span>
+                            <span id="stat-success-rate" class="text-[10px] text-emerald-400 block mt-0.5">...</span>
+                        </div>
+                        <div class="p-4 bg-slate-900/80 rounded-xl border border-slate-800/80">
+                            <span class="text-[11px] font-mono text-slate-400 uppercase tracking-wider block mb-1">Active Proxy IP</span>
+                            <span id="stat-proxy-ip" class="text-sm font-bold font-mono text-purple-400 truncate block">Checking...</span>
+                            <span id="stat-proxy-isp" class="text-[10px] text-slate-400 truncate block mt-0.5">Singapore Residential</span>
+                        </div>
+                        <div class="p-4 bg-slate-900/80 rounded-xl border border-slate-800/80">
+                            <span class="text-[11px] font-mono text-slate-400 uppercase tracking-wider block mb-1">Plan Period</span>
+                            <span id="stat-plan-end" class="text-xs font-bold font-mono text-amber-400 block">Loading...</span>
+                            <span id="stat-plan-start" class="text-[10px] text-slate-500 block mt-0.5">...</span>
+                        </div>
+                    </div>
+
+                    <!-- Usage Info Footnote -->
+                    <div class="p-3 bg-slate-950/60 rounded-xl border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs text-slate-400">
+                        <div class="flex items-center gap-2">
+                            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                            <span>Proxy Mode: <strong class="text-slate-200">Garena Only (0-Data Waste)</strong></span>
+                        </div>
+                        <span class="text-[11px] font-mono text-slate-500">~5-10 KB per order | 1 GB ≈ 100,000+ Orders</span>
+                    </div>
+                </section>
                 
                 <!-- Overview -->
                 <section id="overview" class="glass-card p-6 rounded-2xl glow-emerald">
@@ -1453,6 +1739,52 @@ HTML_CONTENT = """<!DOCTYPE html>
                 alert('Copied to clipboard: ' + text);
             });
         }
+
+        async function loadProxyUsage() {
+            const bwEl = document.getElementById('stat-bandwidth-mb');
+            const bytesEl = document.getElementById('stat-bandwidth-bytes');
+            const reqEl = document.getElementById('stat-requests-total');
+            const rateEl = document.getElementById('stat-success-rate');
+            const ipEl = document.getElementById('stat-proxy-ip');
+            const ispEl = document.getElementById('stat-proxy-isp');
+            const endEl = document.getElementById('stat-plan-end');
+            const startEl = document.getElementById('stat-plan-start');
+
+            bwEl.innerText = "Refreshing...";
+            try {
+                const res = await fetch('/api/proxy/usage');
+                const data = await res.json();
+                if (data.status === 'success') {
+                    bwEl.innerText = data.bandwidth_used_mb || "0 MB";
+                    bytesEl.innerText = `${(data.bandwidth_used_bytes || 0).toLocaleString()} bytes (${data.bandwidth_used_gb || '0 GB'})`;
+                    reqEl.innerText = `${data.requests_total || 0} reqs`;
+                    rateEl.innerText = `Success: ${data.success_rate || '100%'} (${data.requests_successful || 0} ok)`;
+                    endEl.innerText = `Renews: ${data.subscription_end || 'N/A'}`;
+                    startEl.innerText = `Started: ${data.subscription_start || 'N/A'}`;
+                } else {
+                    bwEl.innerText = "Error";
+                    bytesEl.innerText = data.message || "Failed to load stats";
+                }
+            } catch (e) {
+                bwEl.innerText = "Offline";
+            }
+
+            try {
+                const resIp = await fetch('/api/proxy/status?apiKey=linux-lx0199222');
+                const dataIp = await resIp.json();
+                if (dataIp.status === 'success') {
+                    ipEl.innerText = dataIp.ip || "Connected";
+                    ispEl.innerText = `${dataIp.isp || 'Singapore Residential'} (${dataIp.latency_ms || ''})`;
+                } else {
+                    ipEl.innerText = "Connected";
+                }
+            } catch (e) {
+                ipEl.innerText = "Active";
+            }
+        }
+
+        // Auto load on page start
+        document.addEventListener('DOMContentLoaded', loadProxyUsage);
     </script>
 </body>
 </html>"""
