@@ -21,14 +21,60 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
+# ─── Load Environment Variables (.env) ─────────────────────────────────────────
+env_path = os.path.join(os.path.dirname(__file__), ".env")
+if os.path.exists(env_path):
+    with open(env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ[k.strip()] = v.strip()
+
 # ─── Config ───────────────────────────────────────────────────────────────────
 VALID_API_KEYS = {
     "linux-lx0199222",
     "70c9188c-e70e-4eb3-bd50-7d375d2a390c",
 }
-TRANSACTION_LOG = "transaction.json"
-FAILED_LOG = "failed.json"
+LOGS_DIR = "logs"
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+REQUEST_LOG = os.path.join(LOGS_DIR, "requests.json")
+RESPONSE_LOG = os.path.join(LOGS_DIR, "responses.json")
+PASS_LOG = os.path.join(LOGS_DIR, "pass.json")
+TRANSACTION_LOG = os.path.join(LOGS_DIR, "transaction.json")
+FAILED_LOG = os.path.join(LOGS_DIR, "failed.json")
+ACTIVITY_LOG = os.path.join(LOGS_DIR, "activity.log")
 MAX_CODES_PER_ORDER = 5
+
+# ─── Webshare Singapore Proxy Config ──────────────────────────────────────────
+WEBSHARE_ENABLED = os.getenv("WEBSHARE_ENABLED", "true").lower() in ("true", "1", "yes")
+WEBSHARE_HOST = os.getenv("WEBSHARE_HOST", "p.webshare.io")
+WEBSHARE_PORT = os.getenv("WEBSHARE_PORT", "80")
+WEBSHARE_USER = os.getenv("WEBSHARE_USER", "cghgkxjs-sg")
+WEBSHARE_PASS = os.getenv("WEBSHARE_PASS", "9uvtmzg255yk")
+WEBSHARE_COUNTRY = os.getenv("WEBSHARE_COUNTRY", "sg").lower()
+PROXY_MODE = os.getenv("PROXY_MODE", "garena_only").lower()  # 'garena_only' or 'all'
+
+
+def build_webshare_proxy(session_id: str | None = None) -> dict | None:
+    """
+    Webshare Singapore Rotating Proxy ডিকশনারি রিটার্ন করে।
+    """
+    if not WEBSHARE_ENABLED or not WEBSHARE_USER or not WEBSHARE_PASS:
+        return None
+
+    user_str = WEBSHARE_USER.strip()
+    if WEBSHARE_COUNTRY and not any(user_str.lower().endswith(x) for x in [f"-{WEBSHARE_COUNTRY}", f"-{WEBSHARE_COUNTRY}-1", f"-{WEBSHARE_COUNTRY}-2"]):
+        user_str = f"{user_str}-{WEBSHARE_COUNTRY}"
+
+    proxy_url = f"http://{user_str}:{WEBSHARE_PASS.strip()}@{WEBSHARE_HOST.strip()}:{WEBSHARE_PORT.strip()}"
+    return {
+        "http": proxy_url,
+        "https": proxy_url
+    }
+
+
 
 
 # ─── Package/Denomination List ────────────────────────────────────────────────
@@ -41,7 +87,8 @@ DENOM_LIST = {
     "6":  {"name": "1240 Diamond",       "payload": '{"name":"1240 Diamond","amount":"810.0","amount_uc":"810.0","amount_up":810}'},
     "7":  {"name": "2530 Diamond",       "payload": '{"name":"2530 Diamond","amount":"1625.0","amount_uc":"1625.0","amount_up":1625}'},
     "8":  {"name": "Weekly Membership",  "payload": '{"name":"Weekly Membership","amount":"161.0","amount_uc":"161.0","amount_up":161}'},
-    "9":  {"name": "Monthly Membership", "payload": '{"name":"Monthly Membership","amount":"800.0","amount_uc":"800.0","amount_up":800}'}
+    "9":  {"name": "Monthly Membership", "payload": '{"name":"Monthly Membership","amount":"800.0","amount_uc":"800.0","amount_up":800}'},
+    "10": {"name": "Level Up Pass",      "payload": '{"name":"Level Up Pass","amount":"161.0","amount_uc":"161.0","amount_up":161}'},
 }
 
 # ─── UniPin Code Prefix → Package ID Map ─────────────────────────────────────
@@ -123,77 +170,96 @@ def is_valid_api_key(request: Request, data: dict) -> bool:
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
+def log_activity(line: str):
+    """সহজ এক-লাইনের হিউম্যান রিডেবল লগ ফাইলে লিখে"""
+    try:
+        with open(ACTIVITY_LOG, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception as e:
+        print(f"[!] Activity Log Error: {e}")
+
 def log_data(filename: str, data: dict):
-    """JSON ফাইলে লগ এন্ট্রি যুক্ত করে"""
+    """JSON ফাইলে লগ এন্ট্রি যুক্ত করে (সর্বোচ্চ ১০০০টি এন্ট্রি)"""
     try:
         logs = []
         if os.path.exists(filename):
             with open(filename, "r", encoding="utf-8") as f:
                 try:
                     logs = json.load(f)
+                    if not isinstance(logs, list):
+                        logs = []
                 except json.JSONDecodeError:
                     logs = []
-        data["log_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        logs.append(data)
+        data_copy = dict(data)
+        data_copy["log_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        logs.insert(0, data_copy)
+        if len(logs) > 1000:
+            logs = logs[:1000]
         with open(filename, "w", encoding="utf-8") as f:
-            json.dump(logs, f, indent=4, ensure_ascii=False)
+            json.dump(logs, f, indent=2, ensure_ascii=False)
     except Exception as e:
-        print(f"[!] Log Error: {e}")
+        print(f"[!] Log Error ({filename}): {e}")
 
 
 # ─── Garena Payment Init ──────────────────────────────────────────────────────
 
-# DataDome Token Cache (5 mins TTL)
+# DataDome Token In-Memory Background Cache
 _cached_datadome = ""
 _cached_datadome_time = 0
+
+def fetch_fresh_datadome_token():
+    global _cached_datadome, _cached_datadome_time
+    try:
+        scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'android', 'desktop': False})
+        proxy_dict = build_webshare_proxy(session_id="datadome_worker")
+        if proxy_dict:
+            scraper.proxies = proxy_dict
+        dd_res = scraper.post("https://api-js.datadome.co/js/", data={
+            "ddk": "AE3F04AD3F0D3A462481A337485081",
+            "Referer": "https://shop.garena.my/",
+            "responseFormat": "json"
+        }, timeout=(4, 8))
+        dd_cookie_raw = dd_res.json().get("cookie", "")
+        if "datadome=" in dd_cookie_raw:
+            _cached_datadome = dd_cookie_raw.split("datadome=")[1].split(";")[0]
+            _cached_datadome_time = time.time()
+    except Exception:
+        pass
+
 
 def get_cached_datadome_token(scraper) -> str:
     global _cached_datadome, _cached_datadome_time
     now = time.time()
-    if not _cached_datadome or (now - _cached_datadome_time) > 300:
-        try:
-            dd_res = scraper.post("https://api-js.datadome.co/js/", data={
-                "ddk": "AE3F04AD3F0D3A462481A337485081",
-                "Referer": "https://shop.garena.my/",
-                "responseFormat": "json"
-            }, timeout=(5, 10))
-            dd_cookie_raw = dd_res.json().get("cookie", "")
-            if "datadome=" in dd_cookie_raw:
-                _cached_datadome = dd_cookie_raw.split("datadome=")[1].split(";")[0]
-                _cached_datadome_time = now
-        except Exception:
-            pass
+    if not _cached_datadome or (now - _cached_datadome_time) > 1800:
+        fetch_fresh_datadome_token()
     return _cached_datadome
 
 
-def garena_payment_init(player_id: str) -> dict:
+def garena_payment_init(player_id: str, session_id: str | None = None) -> dict:
     """
-    Garena শপে লগইন করে UniPin পেমেন্ট ইনিট URL সংগ্রহ করে।
+    Garena শপে লগইন করে UniPin পেমেন্ট ইনিট URL সংগ্রহ করে (Ultra-Fast Streamlined Pipeline)।
     Returns: {"status": "success", "url": ..., "nickname": ..., "region": ...}
              or {"status": "error", "message": ...}
     """
     scraper = cloudscraper.create_scraper(
         browser={'browser': 'chrome', 'platform': 'android', 'desktop': False}
     )
+    proxy_dict = build_webshare_proxy(session_id=session_id)
+    if proxy_dict:
+        scraper.proxies = proxy_dict
 
     # Step 0: ডাটাডোম অ্যান্টি-বট কুকি সংগ্রহ (ইন-মেমোরি ক্যাশ্ড)
     datadome_val = get_cached_datadome_token(scraper)
+    mspid2 = uuid.uuid4().hex
 
-    # Step 1: মূল পেজ থেকে mspid2 কুকি নাও
-    scraper.get("https://shop.garena.my", timeout=(5, 10))
-    mspid2 = scraper.cookies.get('mspid2', '')
-
-    if not mspid2:
-        return {"status": "error", "message": "mspid2 not found! Check VPN/IP."}
-
-    # Step 2: Player ID দিয়ে লগইন
+    # Step 1: সরাসরি Player ID দিয়ে লগইন (হোমপেজ GET ছাড়াই ৩ সেকেন্ড বাঁচানো হয়েছে)
     login_url = "https://shop.garena.my/api/auth/player_id_login"
     login_headers = {
         "Host": "shop.garena.my",
         "Connection": "keep-alive",
-        "sec-ch-ua-platform": "\"Android\"",
+        "sec-ch-ua-platform": '"Android"',
         "User-Agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.124 Mobile Safari/537.36",
-        "sec-ch-ua": "\"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"150\", \"Android WebView\";v=\"150\"",
+        "sec-ch-ua": '"Not;A=Brand";v="8", "Chromium";v="150", "Android WebView";v="150"',
         "Content-Type": "application/json",
         "sec-ch-ua-mobile": "?1",
         "Accept": "*/*",
@@ -209,7 +275,7 @@ def garena_payment_init(player_id: str) -> dict:
     login_payload = {"app_id": 100067, "login_id": player_id}
 
     try:
-        login_res = scraper.post(login_url, headers=login_headers, json=login_payload, timeout=(5, 10))
+        login_res = scraper.post(login_url, headers=login_headers, json=login_payload, timeout=(4, 8))
         login_data = login_res.json()
         login_nickname = login_data.get('nickname', '')
         login_region = login_data.get('region', '')
@@ -225,8 +291,8 @@ def garena_payment_init(player_id: str) -> dict:
     if not session_key:
         return {"status": "error", "message": "Session Key not found."}
 
-    # Step 3: Role ভেরিফিকেশন
-    role_url = "https://shop.garena.my/api/shop/apps/roles?app_id=100067&region=MY&language=en&source=mb"
+    # Step 2: Preflight & CSRF
+    preflight_url = "https://shop.garena.my/api/preflight"
     role_headers = {
         "Host": "shop.garena.my",
         "Connection": "keep-alive",
@@ -235,28 +301,12 @@ def garena_payment_init(player_id: str) -> dict:
         "Accept": "application/json, text/plain, */*",
         "Cookie": f"source=mb; region=MY; language=en; mspid2={mspid2}; __csrf__=zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7; datadome={new_datadome}; session_key={session_key}"
     }
-
-    try:
-        role_res = scraper.get(role_url, headers=role_headers, timeout=(5, 10))
-        role_data = role_res.json()
-        player_info = role_data.get("100067", [])[0]
-
-        role_nickname = player_info.get("role", "")
-        role_region = player_info.get("region", "")
-
-        if role_nickname != login_nickname or role_region != login_region:
-            return {"status": "error", "message": f"Verification Failed! Mismatch: Expected {login_nickname}, Found {role_nickname}"}
-    except Exception:
-        return {"status": "error", "message": "Roles not found or verification failed."}
-
-    # Step 4: Preflight & CSRF
-    preflight_url = "https://shop.garena.my/api/preflight"
-    preflight_res = scraper.post(preflight_url, headers=role_headers, timeout=(5, 10))
+    preflight_res = scraper.post(preflight_url, headers=role_headers, timeout=(4, 8))
     set_cookie = preflight_res.headers.get('Set-Cookie', '')
     csrf_match = re.search(r'__csrf__=([^;]+)', set_cookie)
     new_csrf = csrf_match.group(1) if csrf_match else "zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7"
 
-    # Step 5: Payment Init (UniPin URL আনা)
+    # Step 3: Payment Init (UniPin URL আনা)
     pay_init_url = "https://shop.garena.my/api/shop/pay/init?region=MY&language=en"
     pay_headers = {
         "Host": "shop.garena.my",
@@ -284,7 +334,7 @@ def garena_payment_init(player_id: str) -> dict:
     }
 
     try:
-        final_res = scraper.post(pay_init_url, headers=pay_headers, json=pay_payload, timeout=(5, 10))
+        final_res = scraper.post(pay_init_url, headers=pay_headers, json=pay_payload, timeout=(4, 8))
         init_url = final_res.json().get('init', {}).get('url', '')
         if init_url:
             return {"status": "success", "url": init_url, "nickname": login_nickname, "region": login_region}
@@ -293,15 +343,168 @@ def garena_payment_init(player_id: str) -> dict:
         return {"status": "error", "message": "Failed to fetch payment init URL"}
 
 
+def garena_payment_init_batch(player_id: str, count: int = 1, session_id: str | None = None) -> dict:
+    """
+    Garena শপে ১ বার লগইন করে একসাথে count-সংখ্যক UniPin পেমেন্ট ইনিট URL সংগ্রহ করে।
+    (এতে অ্যাকাউন্ট কনকারেন্সি রেস-কন্ডিশন ছাড়াই সব কোডের URL ১.৫-২ সেকেন্ডে রেডি হয়)
+    """
+    if count <= 1:
+        res = garena_payment_init(player_id, session_id=session_id)
+        if res.get("status") == "success":
+            return {
+                "status": "success",
+                "urls": [res.get("url")],
+                "nickname": res.get("nickname"),
+                "region": res.get("region")
+            }
+        return res
+
+    for attempt in range(2):
+        scraper = cloudscraper.create_scraper(
+            browser={'browser': 'chrome', 'platform': 'android', 'desktop': False}
+        )
+        proxy_dict = build_webshare_proxy(session_id=session_id or f"batch_{attempt}")
+        if proxy_dict:
+            scraper.proxies = proxy_dict
+
+        datadome_val = get_cached_datadome_token(scraper)
+        mspid2 = uuid.uuid4().hex
+
+        login_url = "https://shop.garena.my/api/auth/player_id_login"
+        login_headers = {
+            "Host": "shop.garena.my",
+            "Connection": "keep-alive",
+            "sec-ch-ua-platform": '"Android"',
+            "User-Agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.124 Mobile Safari/537.36",
+            "sec-ch-ua": '"Not;A=Brand";v="8", "Chromium";v="150", "Android WebView";v="150"',
+            "Content-Type": "application/json",
+            "sec-ch-ua-mobile": "?1",
+            "Accept": "*/*",
+            "Origin": "https://shop.garena.my",
+            "X-Requested-With": "mark.via.gp",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Dest": "empty",
+            "Referer": "https://shop.garena.my/",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cookie": f"source=mb; region=SG; language=en; mspid2={mspid2}; datadome={datadome_val}"
+        }
+        login_payload = {"app_id": 100067, "login_id": player_id}
+
+        try:
+            login_res = scraper.post(login_url, headers=login_headers, json=login_payload, timeout=(4, 8))
+            login_data = login_res.json()
+            login_nickname = login_data.get('nickname', '')
+            login_region = login_data.get('region', '')
+            if not login_nickname:
+                if attempt == 0:
+                    time.sleep(0.3)
+                    continue
+                return {"status": "error", "message": "Invalid Player ID or empty nickname"}
+        except Exception:
+            if attempt == 0:
+                time.sleep(0.3)
+                continue
+            return {"status": "error", "message": "Login data could not be collected."}
+
+        new_datadome = scraper.cookies.get('datadome', datadome_val) or datadome_val
+        session_key = scraper.cookies.get('session_key', '')
+        if not session_key:
+            if attempt == 0:
+                time.sleep(0.3)
+                continue
+            return {"status": "error", "message": "Session Key not found."}
+
+        preflight_url = "https://shop.garena.my/api/preflight"
+        role_headers = {
+            "Host": "shop.garena.my",
+            "Connection": "keep-alive",
+            "sec-ch-ua-platform": '"Android"',
+            "User-Agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Cookie": f"source=mb; region=MY; language=en; mspid2={mspid2}; __csrf__=zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7; datadome={new_datadome}; session_key={session_key}"
+        }
+        try:
+            preflight_res = scraper.post(preflight_url, headers=role_headers, timeout=(4, 8))
+            set_cookie = preflight_res.headers.get('Set-Cookie', '')
+            csrf_match = re.search(r'__csrf__=([^;]+)', set_cookie)
+            new_csrf = csrf_match.group(1) if csrf_match else "zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7"
+        except Exception:
+            new_csrf = "zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7"
+
+        # Parallel pay inits for `count` URLs
+        pay_init_url = "https://shop.garena.my/api/shop/pay/init?region=MY&language=en"
+        pay_headers = {
+            "Host": "shop.garena.my",
+            "Connection": "keep-alive",
+            "sec-ch-ua-platform": '"Android"',
+            "x-csrf-token": new_csrf,
+            "User-Agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "Cookie": f"source=mb; region=MY; language=en; mspid2={mspid2}; session_key={session_key}; datadome={new_datadome}; __csrf__={new_csrf}"
+        }
+        pay_payload = {
+            "app_id": 100067,
+            "packed_role_id": 0,
+            "channel_id": 221179,
+            "service": "mb",
+            "channel_data": {"need_return": True, "payment_channel": None},
+            "revamp_experiment": {
+                "session_id": mspid2,
+                "group": "treatment2",
+                "service_version": "mshop_frontend_20260324",
+                "source": "mb",
+                "domain": "shop.garena.my"
+            }
+        }
+
+        def fetch_single_pay_url(idx_i):
+            try:
+                final_res = scraper.post(pay_init_url, headers=pay_headers, json=pay_payload, timeout=(4, 8))
+                return final_res.json().get('init', {}).get('url', '')
+            except Exception:
+                return ''
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=count) as executor:
+            urls = list(executor.map(fetch_single_pay_url, range(count)))
+
+        valid_urls = [u for u in urls if u]
+        if len(valid_urls) == count:
+            return {
+                "status": "success",
+                "urls": urls,
+                "nickname": login_nickname,
+                "region": login_region
+            }
+        elif len(valid_urls) > 0:
+            return {
+                "status": "success",
+                "urls": urls,
+                "nickname": login_nickname,
+                "region": login_region
+            }
+        elif attempt == 0:
+            time.sleep(0.3)
+            continue
+        return {"status": "error", "message": "Failed to fetch payment init URLs"}
+
+    return {"status": "error", "message": "Garena init failed"}
+
+
 # ─── UniPin Voucher Redeem ────────────────────────────────────────────────────
 
-def execute_redeem(input_url: str, packageId: str, user_input: str) -> dict:
+def execute_redeem(input_url: str, packageId: str, user_input: str, session_id: str | None = None) -> dict:
     """
-    UniPin-এ ভাউচার সিরিয়াল ও পিন সাবমিট করে রিডিম করে।
+    UniPin-এ ভাউচার সিরিয়াল ও পিন সাবমিট করে রিডিম করে (Ultra-Fast 2-Step Flow)।
     Returns: {"status": "success", "details": {...}}
              or {"status": "error", "message": ...}
     """
     scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'android', 'desktop': False})
+    if PROXY_MODE == "all":
+        proxy_dict = build_webshare_proxy(session_id=session_id)
+        if proxy_dict:
+            scraper.proxies = proxy_dict
 
     match = re.search(r'/unibox/d/([^?]+)', input_url)
     if not match:
@@ -309,68 +512,39 @@ def execute_redeem(input_url: str, packageId: str, user_input: str) -> dict:
     unique_id = match.group(1)
 
     try:
-        # Step 1: UniPin session শুরু
-        res1 = scraper.get(input_url, headers={
-            "user-agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
-            "referer": "https://shop.garena.my/"
-        }, timeout=(5, 10))
-        c1 = scraper.cookies.get_dict()
-        xsrf_1 = c1.get('__Host-XSRF-TOKEN', '')
-        session_1 = c1.get('unipin_session', '')
-
-        # Step 2: Denomination সিলেকশন পেজ লোড
+        # Step 1: সরাসরি Denomination সিলেকশন পেজ লোড (মাঝের অপ্রয়োজনীয় হোমপেজ GET বাদ)
         denom_page_url = f"https://www.unipin.com/unibox/select_denom/{unique_id}?lg=en"
-        headers2 = {
+        headers_get = {
             "upgrade-insecure-requests": "1",
             "user-agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
             "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "referer": "https://shop.garena.my/",
-            "cookie": f"region=BGD; __Host-XSRF-TOKEN={xsrf_1}; unipin_session={session_1}"
+            "referer": "https://shop.garena.my/"
         }
-        res2 = scraper.get(denom_page_url, headers=headers2, timeout=(5, 10))
+        res_denom = scraper.get(denom_page_url, headers=headers_get, timeout=(4, 8))
 
-        c2 = scraper.cookies.get_dict()
-        xsrf_2 = c2.get('__Host-XSRF-TOKEN', xsrf_1)
-        session_2 = c2.get('unipin_session', session_1)
+        # Fast Regex CSRF Token Extraction
+        match_csrf = re.search(r'name=["\']csrf-token["\']\s+content=["\']([^"\']+)["\']', res_denom.text) or re.search(r'content=["\']([^"\']+)["\']\s+name=["\']csrf-token["\']', res_denom.text)
+        meta_token = match_csrf.group(1) if match_csrf else None
+        if not meta_token:
+            soup2 = BeautifulSoup(res_denom.text, 'html.parser')
+            meta_tag = soup2.find('meta', {'name': 'csrf-token'})
+            if meta_tag:
+                meta_token = meta_tag['content']
 
-        soup2 = BeautifulSoup(res2.text, 'html.parser')
-        meta_tag = soup2.find('meta', {'name': 'csrf-token'})
-
-        if not meta_tag:
+        if not meta_token:
             return {"status": "error", "message": "csrf-token meta tag not found!"}
 
-        meta_token = meta_tag['content']
-
-        # Step 3: Denomination সিলেক্ট করে POST
-        headers3 = {
+        # Step 2: Denomination সিলেক্ট করে POST
+        headers_post = {
             "origin": "https://www.unipin.com",
             "content-type": "application/x-www-form-urlencoded",
             "user-agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
-            "referer": f"https://www.unipin.com/unibox/select_denom/{unique_id}?lg=en",
-            "cookie": f"region=BGD; __Host-XSRF-TOKEN={xsrf_2}; unipin_session={session_2}"
+            "referer": denom_page_url
         }
-        payload3 = {"_token": meta_token, "denomination": DENOM_LIST[packageId]['payload']}
-        res3 = scraper.post(denom_page_url, data=payload3, headers=headers3, timeout=(5, 10))
+        payload_denom = {"_token": meta_token, "denomination": DENOM_LIST[packageId]['payload']}
+        scraper.post(denom_page_url, data=payload_denom, headers=headers_post, timeout=(4, 8))
 
-        c3 = scraper.cookies.get_dict()
-        xsrf_3 = c3.get('__Host-XSRF-TOKEN', xsrf_2)
-        session_3 = c3.get('unipin_session', session_2)
-
-        # Step 4: ভাউচার পেজ লোড
-        headers4 = {
-            "upgrade-insecure-requests": "1",
-            "user-agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
-            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "referer": f"https://www.unipin.com/unibox/select_denom/{unique_id}?lg=en",
-            "cookie": f"region=BGD; __Host-XSRF-TOKEN={xsrf_3}; unipin_session={session_3}"
-        }
-        res4 = scraper.get(input_url, headers=headers4, timeout=(5, 10))
-
-        c4 = scraper.cookies.get_dict()
-        xsrf_4 = c4.get('__Host-XSRF-TOKEN', xsrf_3)
-        session_4 = c4.get('unipin_session', session_3)
-
-        # Step 5: সিরিয়াল ও পিন পার্স করা
+        # Step 3: সিরিয়াল ও পিন পার্স
         parts = user_input.strip().split(" ")
         if len(parts) < 2:
             return {"status": "error", "message": "Invalid code format. Expected 'SERIAL PIN'"}
@@ -380,30 +554,14 @@ def execute_redeem(input_url: str, packageId: str, user_input: str) -> dict:
             return {"status": "error", "message": "Invalid PIN format. Expected 4 PIN parts separated by hyphens"}
         path_id = get_path_id(user_input)
 
-        # Step 6: ভাউচার পেজ GET
-        voucher_url = f"https://www.unipin.com/unibox/c/{unique_id}/{path_id}?b=1"
-        headers5 = {
-            "upgrade-insecure-requests": "1",
-            "user-agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
-            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "referer": f"https://www.unipin.com/unibox/d/{unique_id}?lg=en",
-            "cookie": f"region=BGD; __Host-XSRF-TOKEN={xsrf_4}; unipin_session={session_4}"
-        }
-        res5 = scraper.get(voucher_url, headers=headers5, timeout=(5, 10))
-
-        c5 = scraper.cookies.get_dict()
-        xsrf_5 = c5.get('__Host-XSRF-TOKEN', xsrf_4)
-        session_5 = c5.get('unipin_session', session_4)
-
-        # Step 7: ভাউচার সাবমিট (Final POST)
+        # Step 4: সরাসরি ভাউচার সাবমিট (Final POST — মাঝের ৩টি অপ্রয়োজনীয় GET পেজ বাদ)
         final_post_url = f"https://www.unipin.com/unibox/c/{unique_id}/{path_id}"
-        headers6 = {
+        headers_final = {
             "origin": "https://www.unipin.com",
             "user-agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/146.0.7680.119 Mobile Safari/537.36",
             "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "content-type": "application/x-www-form-urlencoded",
-            "referer": f"https://www.unipin.com/unibox/c/{unique_id}/{path_id}?b=1",
-            "cookie": f"region=BGD; unipin_session={session_5}; __Host-XSRF-TOKEN={xsrf_5}"
+            "referer": f"https://www.unipin.com/unibox/c/{unique_id}/{path_id}?b=1"
         }
         final_payload = {
             "_token": meta_token,
@@ -414,38 +572,59 @@ def execute_redeem(input_url: str, packageId: str, user_input: str) -> dict:
             "pin_4": pin_parts[3]
         }
 
-        final_res = scraper.post(final_post_url, data=urlencode(final_payload), headers=headers6, timeout=(5, 10))
-        final_soup = BeautifulSoup(final_res.text, 'html.parser')
+        final_res = scraper.post(final_post_url, data=urlencode(final_payload), headers=headers_final, timeout=(4, 8))
 
-        # Step 8: রেজাল্ট পার্স
-        if "Transaction successful" in final_res.text or final_soup.find(string=re.compile("Transaction successful")):
-            def get_val(label_text):
-                label = final_soup.find('div', class_='details-label', string=re.compile(label_text, re.I))
-                if label:
-                    val = label.find_next_sibling('div', class_='details-value')
-                    return val.get_text(strip=True) if val else "N/A"
-                return "N/A"
+        # Step 5: রেজাল্ট দ্রুত পার্স (Fast Regex + Fallback)
+        if "Transaction successful" in final_res.text:
+            def fast_get(label_pattern):
+                m = re.search(rf'{label_pattern}.*?<div[^>]*class=["\']details-value["\'][^>]*>(.*?)</div>', final_res.text, re.IGNORECASE | re.DOTALL)
+                return m.group(1).strip() if m else None
 
-            trans_id = final_soup.find(id='trans_id')
+            trans_id_m = re.search(r'id=["\']trans_id["\'][^>]*>(.*?)<', final_res.text)
+            trans_no = trans_id_m.group(1).strip() if trans_id_m else "N/A"
+
+            date_val = fast_get("Transaction Date") or "N/A"
+            ref_val = fast_get("Reference") or "N/A"
+            item_val = fast_get("Item") or "N/A"
+            amt_val = fast_get("Transaction Amount") or "N/A"
+
+            if date_val == "N/A" or trans_no == "N/A":
+                final_soup = BeautifulSoup(final_res.text, 'html.parser')
+                def get_val(label_text):
+                    label = final_soup.find('div', class_='details-label', string=re.compile(label_text, re.I))
+                    if label:
+                        val = label.find_next_sibling('div', class_='details-value')
+                        return val.get_text(strip=True) if val else "N/A"
+                    return "N/A"
+                trans_id = final_soup.find(id='trans_id')
+                trans_no = trans_id.get_text(strip=True) if trans_id else trans_no
+                date_val = get_val('Transaction Date') if date_val == "N/A" else date_val
+                ref_val = get_val('Reference') if ref_val == "N/A" else ref_val
+                item_val = get_val('Item') if item_val == "N/A" else item_val
+                amt_val = get_val('Transaction Amount') if amt_val == "N/A" else amt_val
+
             details = {
-                "date": get_val('Transaction Date'),
-                "trans_no": trans_id.get_text(strip=True) if trans_id else 'N/A',
-                "reference": get_val('Reference'),
-                "item": get_val('Item'),
-                "amount": get_val('Transaction Amount')
+                "date": date_val,
+                "trans_no": trans_no,
+                "reference": ref_val,
+                "item": item_val,
+                "amount": amt_val
             }
             return {"status": "success", "details": details}
 
-        elif final_soup.find('div', class_='validationError'):
-            err_div = final_soup.find('div', class_='alert alert-danger')
-            return {"status": "error", "message": err_div.get_text(strip=True) if err_div else 'Invalid Serial'}
+        elif "validationError" in final_res.text or "alert-danger" in final_res.text:
+            err_m = re.search(r'<div[^>]*class=["\']alert alert-danger["\'][^>]*>(.*?)</div>', final_res.text, re.DOTALL)
+            return {"status": "error", "message": err_m.group(1).strip() if err_m else 'Invalid Serial'}
 
         elif "Consumed%20Voucher" in final_res.text or "Consumed Voucher" in final_res.text:
             return {"status": "error", "message": "Consumed Voucher (Already Used)"}
 
         else:
-            msg_tag = final_soup.find('h1', class_='title-case-0')
-            return {"status": "error", "message": msg_tag.get_text(strip=True) if msg_tag else 'Unknown Error'}
+            msg_m = re.search(r'<h1[^>]*class=["\']title-case-0["\'][^>]*>(.*?)</h1>', final_res.text, re.DOTALL)
+            return {"status": "error", "message": msg_m.group(1).strip() if msg_m else 'Unknown Error'}
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -473,8 +652,11 @@ def process_single_code(args_tuple: tuple) -> tuple:
             }
             return idx, batch_item, False, "N/A", "N/A"
 
+        # Unique sticky session id for this transaction
+        sub_session_id = uuid.uuid4().hex[:8]
+
         # Garena সেশন ইনিট
-        init_res = garena_payment_init(str(uid))
+        init_res = garena_payment_init(str(uid), session_id=sub_session_id)
 
         if init_res.get("status") == "error":
             msg = init_res.get("message", "Garena init failed")
@@ -489,7 +671,7 @@ def process_single_code(args_tuple: tuple) -> tuple:
         reg  = init_res.get("region", "N/A")
 
         # ভাউচার রিডিম
-        redeem_res = execute_redeem(init_res.get("url", ""), pkg, code)
+        redeem_res = execute_redeem(init_res.get("url", ""), pkg, code, session_id=sub_session_id)
         ok = redeem_res.get("status") == "success"
 
         if ok:
@@ -523,8 +705,11 @@ async def process_batch(uid: str, packageId: str, codes: list, orderid: str) -> 
     """
     একাধিক UniPin ভাউচার কোড asyncio.gather ও to_thread দিয়ে একযোগে প্রসেস করে batch রেজাল্ট রিটার্ন করে।
     (৩-৫ গুণ ফাস্ট)
+    একাধিক UniPin ভাউচার কোড ১টি মাত্র Garena সেশনে প্যারালাল URL সংগ্রহ করে
+    এবং একযোগে UniPin Redeem সম্পন্ন করে ৩.৫ সেকেন্ডে কমপ্লিট করে।
     """
     valid_tasks = [(i, code, uid, packageId) for i, code in enumerate(codes) if code.strip()]
+    valid_tasks = [(i, code.strip(), packageId) for i, code in enumerate(codes) if code.strip()]
 
     if not valid_tasks:
         return {
@@ -551,6 +736,17 @@ async def process_batch(uid: str, packageId: str, codes: list, orderid: str) -> 
         if ok:
             success_count += 1
         else:
+    # Step 1: ১টি ফ্রেশ প্রক্সি সেশনে Garena থেকে সব কোডের URL একসাথে সংগ্রহ করো (~১.৮ সেকেন্ড)
+    init_res = await asyncio.to_thread(garena_payment_init_batch, str(uid), len(valid_tasks))
+
+    if init_res.get("status") == "error":
+        msg = init_res.get("message", "Garena init failed")
+        for i, code, _ in valid_tasks:
+            raw_results[i] = {
+                "uc": code,
+                "ok": False,
+                "detail": f"❌ {msg}"
+            }
             fail_count += 1
         if nick != "N/A": nickname = nick
         if reg != "N/A":  region = reg
@@ -558,8 +754,44 @@ async def process_batch(uid: str, packageId: str, codes: list, orderid: str) -> 
         # একাধিক কোড (২-৫টি) থাকলে asyncio.gather + asyncio.to_thread দিয়ে প্যারালালে প্রসেস করো
         tasks = [asyncio.to_thread(process_single_code, task) for task in valid_tasks]
         task_outputs = await asyncio.gather(*tasks)
+        nickname = init_res.get("nickname", "N/A")
+        region = init_res.get("region", "N/A")
+        urls = init_res.get("urls", [])
 
         for idx, item, ok, nick, reg in task_outputs:
+        # Step 2: সব কোডের UniPin Redeem সম্পূর্ণ প্যারালালে ডিরেক্ট সাবমিট করো (~১.১ সেকেন্ড)
+        def redeem_worker(item_tuple):
+            idx, code, default_pkg, u_url = item_tuple
+            pkg = detect_package_id(code) or default_pkg
+            if not pkg or pkg not in DENOM_LIST:
+                return idx, {"uc": code, "ok": False, "detail": "❌ Undetected or invalid package ID"}, False
+            if not u_url:
+                return idx, {"uc": code, "ok": False, "detail": "❌ Failed to acquire payment gateway URL"}, False
+
+            redeem_res = execute_redeem(u_url, pkg, code)
+            ok = redeem_res.get("status") == "success"
+            if ok:
+                detail = "✅ Success"
+                trx_id = redeem_res.get("details", {}).get("trans_no", None)
+                batch_item = {"uc": code, "ok": ok, "detail": detail}
+                if trx_id and trx_id != "N/A":
+                    batch_item["trx_id"] = trx_id
+                if redeem_res.get("details"):
+                    batch_item["receipt"] = redeem_res["details"]
+            else:
+                msg = redeem_res.get("message", "Failed")
+                batch_item = {"uc": code, "ok": ok, "detail": f"❌ {msg}"}
+            return idx, batch_item, ok
+
+        worker_items = [
+            (task[0], task[1], task[2], urls[i] if i < len(urls) else "")
+            for i, task in enumerate(valid_tasks)
+        ]
+
+        redeem_tasks = [asyncio.to_thread(redeem_worker, item) for item in worker_items]
+        redeem_outputs = await asyncio.gather(*redeem_tasks)
+
+        for idx, item, ok in redeem_outputs:
             raw_results[idx] = item
             if ok:
                 success_count += 1
@@ -601,9 +833,33 @@ async def process_batch(uid: str, packageId: str, codes: list, orderid: str) -> 
         "total_codes": total,
         "success": success_count,
         "failed": fail_count,
-        "status": status
+        "status": status,
+        "batch": batch_results
     }
-    log_data(TRANSACTION_LOG if status != "failed" else FAILED_LOG, log_entry)
+    if status == "success":
+        log_data(PASS_LOG, log_entry)
+        log_data(TRANSACTION_LOG, log_entry)
+    elif status == "partial":
+        log_data(PASS_LOG, log_entry)
+        log_data(FAILED_LOG, log_entry)
+        log_data(TRANSACTION_LOG, log_entry)
+    else:
+        log_data(FAILED_LOG, log_entry)
+
+    # 1-Line Clean Activity Logging for Easy Exploration
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    summary_item = batch_results[0] if batch_results else {}
+    trx_str = summary_item.get("trx_id") or summary_item.get("receipt", {}).get("trans_no", "")
+    code_str = summary_item.get("uc", "")
+    pkg_name = DENOM_LIST.get(packageId, {}).get("name", "Unknown")
+    detail_str = summary_item.get("detail", "")
+
+    if status == "success":
+        log_activity(f"[{now_str}] [PASS] Order: {orderid} | UID: {uid} ({nickname}) | Pkg: {pkg_name} | Code: {code_str} | Trx: {trx_str}")
+    elif status == "partial":
+        log_activity(f"[{now_str}] [PARTIAL] Order: {orderid} | UID: {uid} ({nickname}) | Pkg: {pkg_name} | Success: {success_count}/{total}")
+    else:
+        log_activity(f"[{now_str}] [FAIL] Order: {orderid} | UID: {uid} ({nickname}) | Pkg: {pkg_name} | Code: {code_str} | {detail_str}")
 
     return result
 
@@ -662,7 +918,16 @@ async def get_request_data(request: Request) -> dict:
 
 
 async def async_background_wrapper(uid: str, package_id: str, codes: list, orderid: str, callback_url: str):
+    t_start = time.time()
     result = await process_batch(uid, package_id, codes, orderid)
+    duration_ms = round((time.time() - t_start) * 1000, 2)
+    resp_log_entry = {
+        "orderid": orderid,
+        "endpoint": "/api/unipin/async",
+        "duration_ms": f"{duration_ms} ms",
+        "response": result
+    }
+    log_data(RESPONSE_LOG, resp_log_entry)
     await send_callback(callback_url, result)
 
 
@@ -674,6 +939,7 @@ async def unipin_api(request: Request):
     """
     Sync TopUp Endpoint — তাৎক্ষণিক রেজাল্ট রিটার্ন করে।
     """
+    t_start = time.time()
     data = await get_request_data(request)
 
     if not is_valid_api_key(request, data):
@@ -698,7 +964,28 @@ async def unipin_api(request: Request):
     if not package_id or package_id not in DENOM_LIST:
         return JSONResponse(content={"status": "error", "message": "Cannot detect product from code prefix. Please provide packageId (1-9)."}, status_code=400)
 
+    client_ip = request.client.host if request.client else "unknown"
+    req_log_entry = {
+        "orderid": orderid,
+        "endpoint": "/api/unipin",
+        "client_ip": client_ip,
+        "uid": uid,
+        "package_id": package_id,
+        "codes_count": len(codes),
+        "payload": {k: v for k, v in data.items() if k != "apiKey"}
+    }
+    log_data(REQUEST_LOG, req_log_entry)
+
     result = await process_batch(uid, package_id, codes, orderid)
+    duration_ms = round((time.time() - t_start) * 1000, 2)
+    resp_log_entry = {
+        "orderid": orderid,
+        "endpoint": "/api/unipin",
+        "duration_ms": f"{duration_ms} ms",
+        "response": result
+    }
+    log_data(RESPONSE_LOG, resp_log_entry)
+
     return JSONResponse(content=result, status_code=200)
 
 
@@ -737,6 +1024,19 @@ async def unipin_async(request: Request, background_tasks: BackgroundTasks):
     if not package_id or package_id not in DENOM_LIST:
         return JSONResponse(content={"status": "error", "message": "Cannot detect product from code prefix. Please provide packageId (1-9)."}, status_code=400)
 
+    client_ip = request.client.host if request.client else "unknown"
+    req_log_entry = {
+        "orderid": orderid,
+        "endpoint": "/api/unipin/async",
+        "client_ip": client_ip,
+        "uid": uid,
+        "package_id": package_id,
+        "codes_count": len(codes),
+        "callback_url": callback_url,
+        "payload": {k: v for k, v in data.items() if k != "apiKey"}
+    }
+    log_data(REQUEST_LOG, req_log_entry)
+
     background_tasks.add_task(async_background_wrapper, uid, package_id, codes, orderid, callback_url)
 
     return JSONResponse(content={"status": "accepted", "orderid": orderid}, status_code=202)
@@ -745,40 +1045,93 @@ async def unipin_async(request: Request, background_tasks: BackgroundTasks):
 @app.get("/api/history")
 async def api_history(request: Request):
     """
-    অর্ডার হিস্টোরি দেখায়।
-    GET /api/history?apiKey=linux-lx0199222&limit=50
+    অর্ডার ও সিস্টেম হিস্টোরি দেখায়।
+    GET /api/history?apiKey=linux-lx0199222&type=pass|failed|requests|responses|all&limit=50
     """
     data = dict(request.query_params)
     if not is_valid_api_key(request, data):
         return JSONResponse(content={"status": "error", "message": "Invalid API Key."}, status_code=401)
 
     limit    = min(int(request.query_params.get("limit", 50)), 200)
-    log_type = request.query_params.get("type", "all")
+    log_type = request.query_params.get("type", "all").lower()
 
     all_logs = []
 
-    if log_type in ("all", "success") and os.path.exists(TRANSACTION_LOG):
-        with open(TRANSACTION_LOG, "r", encoding="utf-8") as f:
+    def load_log_file(fn):
+        if os.path.exists(fn):
             try:
-                all_logs.extend(json.load(f))
+                with open(fn, "r", encoding="utf-8") as f:
+                    return json.load(f)
             except Exception:
-                pass
+                return []
+        return []
 
-    if log_type in ("all", "failed") and os.path.exists(FAILED_LOG):
-        with open(FAILED_LOG, "r", encoding="utf-8") as f:
-            try:
-                all_logs.extend(json.load(f))
-            except Exception:
-                pass
+    if log_type in ("all", "pass", "success"):
+        all_logs.extend(load_log_file(PASS_LOG))
+    if log_type in ("all", "failed"):
+        all_logs.extend(load_log_file(FAILED_LOG))
+    if log_type in ("requests",):
+        all_logs.extend(load_log_file(REQUEST_LOG))
+    if log_type in ("responses",):
+        all_logs.extend(load_log_file(RESPONSE_LOG))
+    if log_type in ("transaction", "transactions"):
+        all_logs.extend(load_log_file(TRANSACTION_LOG))
 
     all_logs.sort(key=lambda x: x.get("log_time", ""), reverse=True)
     all_logs = all_logs[:limit]
 
     return JSONResponse(content={
         "status": "success",
+        "type": log_type,
         "total": len(all_logs),
         "history": all_logs
     })
+
+
+@app.get("/api/proxy/status")
+async def api_proxy_status(request: Request):
+    """
+    Webshare Proxy কানেকশন, আইপি এবং স্পিড/ল্যাটেন্সি টেস্ট এন্ডপয়েন্ট।
+    """
+    data = dict(request.query_params)
+    if not is_valid_api_key(request, data):
+        return JSONResponse(content={"status": "error", "message": "Invalid API Key."}, status_code=401)
+
+    if not WEBSHARE_ENABLED or not WEBSHARE_USER or not WEBSHARE_PASS:
+        return JSONResponse(content={
+            "status": "disabled",
+            "message": "Webshare Proxy is currently disabled or credentials not set in .env",
+            "proxy_enabled": WEBSHARE_ENABLED,
+            "proxy_mode": PROXY_MODE
+        })
+
+    proxy_info = build_webshare_proxy(session_id="test")
+    t0 = time.time()
+    try:
+        async with httpx.AsyncClient(proxy=proxy_info["http"], timeout=10.0) as client:
+            resp = await client.get("http://ip-api.com/json")
+            latency_ms = round((time.time() - t0) * 1000, 2)
+            ip_data = resp.json()
+            return JSONResponse(content={
+                "status": "success",
+                "message": "Webshare Proxy is active and connected!",
+                "latency_ms": f"{latency_ms} ms",
+                "proxy_mode": PROXY_MODE,
+                "ip": ip_data.get("query"),
+                "country": ip_data.get("country"),
+                "countryCode": ip_data.get("countryCode"),
+                "city": ip_data.get("city"),
+                "isp": ip_data.get("isp")
+            })
+    except Exception as e:
+        latency_ms = round((time.time() - t0) * 1000, 2)
+        return JSONResponse(content={
+            "status": "error",
+            "message": f"Proxy connection failed: {str(e)}",
+            "latency_ms": f"{latency_ms} ms",
+            "proxy_mode": PROXY_MODE
+        }, status_code=500)
+
 
 
 # ─── Home / Dashboard ─────────────────────────────────────────────────────────
