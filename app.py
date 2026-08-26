@@ -9,6 +9,8 @@ import json
 import os
 import uuid
 import time
+import threading
+import concurrent.futures
 import requests as http_requests
 import httpx
 from urllib.parse import urlencode
@@ -226,6 +228,16 @@ def fetch_fresh_datadome_token():
     except Exception:
         pass
 
+def _start_datadome_bg_thread():
+    def _loop():
+        while True:
+            fetch_fresh_datadome_token()
+            time.sleep(300)
+    threading.Thread(target=_loop, daemon=True).start()
+
+# Pre-warm DataDome immediately in background thread
+_start_datadome_bg_thread()
+
 
 def get_cached_datadome_token(scraper) -> str:
     global _cached_datadome, _cached_datadome_time
@@ -237,7 +249,7 @@ def get_cached_datadome_token(scraper) -> str:
 
 def garena_payment_init(player_id: str, session_id: str | None = None) -> dict:
     """
-    Garena শপে লগইন করে UniPin পেমেন্ট ইনিট URL সংগ্রহ করে (Ultra-Fast Streamlined Pipeline)।
+    Garena শপে লগইন করে UniPin পেমেন্ট ইনিট URL সংগ্রহ করে (Direct High-Speed Flow)।
     Returns: {"status": "success", "url": ..., "nickname": ..., "region": ...}
              or {"status": "error", "message": ...}
     """
@@ -252,7 +264,7 @@ def garena_payment_init(player_id: str, session_id: str | None = None) -> dict:
     datadome_val = get_cached_datadome_token(scraper)
     mspid2 = uuid.uuid4().hex
 
-    # Step 1: সরাসরি Player ID দিয়ে লগইন (হোমপেজ GET ছাড়াই ৩ সেকেন্ড বাঁচানো হয়েছে)
+    # Step 1: সরাসরি Player ID দিয়ে লগইন
     login_url = "https://shop.garena.my/api/auth/player_id_login"
     login_headers = {
         "Host": "shop.garena.my",
@@ -291,32 +303,17 @@ def garena_payment_init(player_id: str, session_id: str | None = None) -> dict:
     if not session_key:
         return {"status": "error", "message": "Session Key not found."}
 
-    # Step 2: Preflight & CSRF
-    preflight_url = "https://shop.garena.my/api/preflight"
-    role_headers = {
-        "Host": "shop.garena.my",
-        "Connection": "keep-alive",
-        "sec-ch-ua-platform": '"Android"',
-        "User-Agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Cookie": f"source=mb; region=MY; language=en; mspid2={mspid2}; __csrf__=zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7; datadome={new_datadome}; session_key={session_key}"
-    }
-    preflight_res = scraper.post(preflight_url, headers=role_headers, timeout=(4, 8))
-    set_cookie = preflight_res.headers.get('Set-Cookie', '')
-    csrf_match = re.search(r'__csrf__=([^;]+)', set_cookie)
-    new_csrf = csrf_match.group(1) if csrf_match else "zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7"
-
-    # Step 3: Payment Init (UniPin URL আনা)
+    # Step 2: Payment Init (Direct Pay Init without unnecessary preflight)
     pay_init_url = "https://shop.garena.my/api/shop/pay/init?region=MY&language=en"
     pay_headers = {
         "Host": "shop.garena.my",
         "Connection": "keep-alive",
         "sec-ch-ua-platform": '"Android"',
-        "x-csrf-token": new_csrf,
+        "x-csrf-token": "zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7",
         "User-Agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json",
-        "Cookie": f"source=mb; region=MY; language=en; mspid2={mspid2}; session_key={session_key}; datadome={new_datadome}; __csrf__={new_csrf}"
+        "Cookie": f"source=mb; region=MY; language=en; mspid2={mspid2}; session_key={session_key}; datadome={new_datadome}; __csrf__=zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7"
     }
     pay_payload = {
         "app_id": 100067,
@@ -415,34 +412,17 @@ def garena_payment_init_batch(player_id: str, count: int = 1, session_id: str | 
                 continue
             return {"status": "error", "message": "Session Key not found."}
 
-        preflight_url = "https://shop.garena.my/api/preflight"
-        role_headers = {
-            "Host": "shop.garena.my",
-            "Connection": "keep-alive",
-            "sec-ch-ua-platform": '"Android"',
-            "User-Agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Cookie": f"source=mb; region=MY; language=en; mspid2={mspid2}; __csrf__=zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7; datadome={new_datadome}; session_key={session_key}"
-        }
-        try:
-            preflight_res = scraper.post(preflight_url, headers=role_headers, timeout=(4, 8))
-            set_cookie = preflight_res.headers.get('Set-Cookie', '')
-            csrf_match = re.search(r'__csrf__=([^;]+)', set_cookie)
-            new_csrf = csrf_match.group(1) if csrf_match else "zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7"
-        except Exception:
-            new_csrf = "zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7"
-
-        # Parallel pay inits for `count` URLs
+        # Parallel pay inits for `count` URLs (Direct without preflight)
         pay_init_url = "https://shop.garena.my/api/shop/pay/init?region=MY&language=en"
         pay_headers = {
             "Host": "shop.garena.my",
             "Connection": "keep-alive",
             "sec-ch-ua-platform": '"Android"',
-            "x-csrf-token": new_csrf,
+            "x-csrf-token": "zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7",
             "User-Agent": "Mozilla/5.0 (Linux; Android 13; M2101K7BG Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.119 Mobile Safari/537.36",
             "Accept": "application/json, text/plain, */*",
             "Content-Type": "application/json",
-            "Cookie": f"source=mb; region=MY; language=en; mspid2={mspid2}; session_key={session_key}; datadome={new_datadome}; __csrf__={new_csrf}"
+            "Cookie": f"source=mb; region=MY; language=en; mspid2={mspid2}; session_key={session_key}; datadome={new_datadome}; __csrf__=zS2n83MSRfrWe4o7cGvWAL6G9en6W5s7"
         }
         pay_payload = {
             "app_id": 100067,
@@ -703,12 +683,9 @@ def process_single_code(args_tuple: tuple) -> tuple:
 
 async def process_batch(uid: str, packageId: str, codes: list, orderid: str) -> dict:
     """
-    একাধিক UniPin ভাউচার কোড asyncio.gather ও to_thread দিয়ে একযোগে প্রসেস করে batch রেজাল্ট রিটার্ন করে।
-    (৩-৫ গুণ ফাস্ট)
     একাধিক UniPin ভাউচার কোড ১টি মাত্র Garena সেশনে প্যারালাল URL সংগ্রহ করে
     এবং একযোগে UniPin Redeem সম্পন্ন করে ৩.৫ সেকেন্ডে কমপ্লিট করে।
     """
-    valid_tasks = [(i, code, uid, packageId) for i, code in enumerate(codes) if code.strip()]
     valid_tasks = [(i, code.strip(), packageId) for i, code in enumerate(codes) if code.strip()]
 
     if not valid_tasks:
@@ -730,12 +707,6 @@ async def process_batch(uid: str, packageId: str, codes: list, orderid: str) -> 
     nickname      = "N/A"
     region        = "N/A"
 
-    if len(valid_tasks) == 1:
-        idx, item, ok, nick, reg = await asyncio.to_thread(process_single_code, valid_tasks[0])
-        raw_results[0] = item
-        if ok:
-            success_count += 1
-        else:
     # Step 1: ১টি ফ্রেশ প্রক্সি সেশনে Garena থেকে সব কোডের URL একসাথে সংগ্রহ করো (~১.৮ সেকেন্ড)
     init_res = await asyncio.to_thread(garena_payment_init_batch, str(uid), len(valid_tasks))
 
@@ -748,17 +719,11 @@ async def process_batch(uid: str, packageId: str, codes: list, orderid: str) -> 
                 "detail": f"❌ {msg}"
             }
             fail_count += 1
-        if nick != "N/A": nickname = nick
-        if reg != "N/A":  region = reg
     else:
-        # একাধিক কোড (২-৫টি) থাকলে asyncio.gather + asyncio.to_thread দিয়ে প্যারালালে প্রসেস করো
-        tasks = [asyncio.to_thread(process_single_code, task) for task in valid_tasks]
-        task_outputs = await asyncio.gather(*tasks)
         nickname = init_res.get("nickname", "N/A")
         region = init_res.get("region", "N/A")
         urls = init_res.get("urls", [])
 
-        for idx, item, ok, nick, reg in task_outputs:
         # Step 2: সব কোডের UniPin Redeem সম্পূর্ণ প্যারালালে ডিরেক্ট সাবমিট করো (~১.১ সেকেন্ড)
         def redeem_worker(item_tuple):
             idx, code, default_pkg, u_url = item_tuple
@@ -797,8 +762,6 @@ async def process_batch(uid: str, packageId: str, codes: list, orderid: str) -> 
                 success_count += 1
             else:
                 fail_count += 1
-            if nick != "N/A": nickname = nick
-            if reg != "N/A":  region = reg
 
     batch_results = [b for b in raw_results if b is not None]
     total = len(batch_results)
