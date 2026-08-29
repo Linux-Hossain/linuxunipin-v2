@@ -1,0 +1,21 @@
+# STRICT PROJECT RULES FOR GEMINI & ANTIGRAVITY AI
+
+1. LOG PROTECTION POLICY:
+   - NEVER clear, truncate, overwrite, or delete `api_requests.log` or any log file without explicit user approval.
+   - All logging operations MUST use append mode (`mode="a"`).
+
+2. BASELINE CODE ISOLATION:
+   - NEVER touch or edit `unpicccc.py`. It is the original baseline.
+   - Write all optimizations, features, and fixes in standalone files (e.g. `unpicctest1.py`).
+
+3. RESELLER / UCBOT API SCHEMA:
+   - All `/topup-sync` responses MUST include both new keys (`batch`, `status`, `success`, `failed`, `total`, `username`) AND legacy keys (`data`, `orderid`, `playerid`, `nickname`, `total_codes`, `successful_codes`, `failed_codes`).
+
+4. LOG READABILITY:
+   - Record `duration={duration}s` in every `RESP_SINGLE` / `RESP_BATCH` entry.
+   - Add a blank line separator (`\n\n`) after every completed request in `api_requests.log`.
+
+5. TLS IMPERSONATION & PERFORMANCE:
+   - Always use `curl_cffi` with `impersonate="chrome120"` for Garena and UniPin HTTP requests to bypass Cloudflare / Akamai JA3 blocking.
+   - Use `background_session_warmer` for instant pre-warmed session acquisition.
+   - Use `clone_session()` per thread during multithreaded batch voucher processing to prevent session thread contention.
