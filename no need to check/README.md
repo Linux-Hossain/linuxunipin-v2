@@ -8,14 +8,15 @@ A high-performance, automated REST API gateway for **Garena Free Fire (BD Server
 
 ## 🌟 Key Features
 
-- ⚡ **Dual Execution Modes**:
-  - `POST /topup-sync` — Direct synchronous response (instant result).
-  - `POST /topup` — Asynchronous webhook mode (`202 Accepted` + POST callback).
+- ⚡ **Synchronous Processing**:
+  - `POST /topup-sync` — Direct response after the transaction finishes.
+  - `POST /api/unipin` — Compatibility alias for `/topup-sync`.
 - 🔄 **Batch Voucher Redeem**: Send up to **5 UniPin codes at once** (comma-separated).
 - 🎯 **Auto Package Detection**: No manual `packageId` required! Automatically detects denomination from code prefixes (`BDMB-T-S`, `UPBD-N-S`, etc.).
 - 🧾 **Detailed Transaction Receipt**: Returns official UniPin `trans_no` (`trx_id`), date, reference, item name, and amount.
 - 🔑 **Flexible Authentication**: Pass token via `Authorization: Bearer <key>` header or `apiKey` in JSON body/query params.
-- 🚀 **Vercel Ready**: Pre-configured with `vercel.json` for 1-click serverless deployment.
+- 📊 **Subscription Control**: Each authenticated topup request is counted against a configurable limit and expiry date.
+- 🚀 **Vercel Ready**: Pre-configured with `vercel.json` for serverless deployment.
 
 ---
 
@@ -55,6 +56,16 @@ Deploy your own instance on Vercel for free in under 60 seconds:
 ---
 
 ## 📖 API Endpoints Reference
+
+### Subscription and Request Limits
+
+The API key identifies a client subscription. Every authenticated `/topup-sync` request consumes one request, including requests that later fail at the provider. Multiple subscriptions are stored in `logs/subscriptions.json`. The current subscription can be checked with:
+
+```http
+GET /status/{api-key}
+```
+
+Each JSON record contains `max_requests`, `used_requests`, `expires_at`, and `active`. Exhausted or expired subscriptions return HTTP `402`. JSON is suitable for local development only; for Vercel production, replace it with an external database because serverless filesystems are not durable.
 
 ### 1. Synchronous Top-up (Instant Result)
 
@@ -108,31 +119,6 @@ Deploy your own instance on Vercel for free in under 60 seconds:
 ```
 
 ---
-
-### 2. Asynchronous Top-up (Webhook Callback)
-
-- **Endpoint:** `POST /topup` or `POST /api/unipin/async`
-- **Headers:** `Authorization: Bearer linux-lx0199222`
-
-#### Request Body
-```json
-{
-  "orderid": "ORD-1002",
-  "playerid": "228197025",
-  "code": "BDMB-T-S-XXXXXX XXXX-XXXX-XXXX-XXXX",
-  "url": "https://yoursite.com/api/webhook",
-  "apiKey": "linux-lx0199222"
-}
-```
-
-#### Immediate Response (202 Accepted)
-```json
-{
-  "status": "accepted",
-  "orderid": "ORD-1002"
-}
-```
-*The full transaction result will be POSTed to your specified `url` when processing completes.*
 
 ---
 

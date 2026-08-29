@@ -6,10 +6,9 @@
 ## 2. GIT COMMIT & PUSH POLICY (NEVER COMMIT WITHOUT USER PERMISSION)
 - **NEVER perform `git commit` or `git push` automatically without asking the user and getting explicit permission first.**
 
-## 3. GARENA CLOUDSCRAPER ENGINE MANDATE (NEVER REPLACE WITH PLAIN REQUESTS)
-- **Garena login (`/api/auth/player_id_login`) and payment init (`/api/shop/pay/init`) MUST ALWAYS use `cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'android', 'desktop': False})`.**
-- NEVER replace Garena calls with plain `requests.Session()` or `httpx`. Garena strictly checks TLS/JA3 browser fingerprints and will reject plain requests with empty nicknames.
-- Keep DataDome token pre-warmed in a background thread to eliminate any latency overhead while preserving full Cloudscraper emulation.
+## 3. GARENA & UNIPIN TLS IMPERSONATION (CURL_CFFI MANDATE)
+- **Garena login, payment init, and UniPin voucher redemption MUST use `curl_cffi` with Chrome TLS Impersonation (`requests.Session(impersonate="chrome120")`).**
+- NEVER replace with plain `requests.Session()` or `httpx` lacking TLS fingerprinting, as Garena/DataDome strictly check TLS/JA3 browser fingerprints. `curl_cffi` provides native Chrome TLS impersonation for sub-second speeds bypassing DataDome challenges.
 
 ## 4. FIXED & IMMUTABLE API CONTRACTS (NEVER CHANGE)
 - **Input Formats**:

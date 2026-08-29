@@ -1,0 +1,24 @@
+{
+  "70c9188c-e70e-4eb3-bd50-7d375d2a390c": {
+    "name": "Bot Client",
+    "rate_limit": 500,
+    "time_window_seconds": 60,
+    "expires_at": null,
+    "enabled": true
+  },
+  "demo_key_123": {
+    "name": "Demo Client",
+    "rate_limit": 60,
+    "time_window_seconds": 60,
+    "expires_at": null,
+    "enabled": true
+  },
+  "ucbot_secret_token_99": {
+    "name": "UcBot Reseller",
+    "rate_limit": 120,
+    "time_window_seconds": 60,
+    "expires_at": "2030-12-31T23:59:59",
+    "enabled": true
+  }
+}
+

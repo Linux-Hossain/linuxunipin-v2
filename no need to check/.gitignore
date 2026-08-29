@@ -3,6 +3,8 @@ __pycache__/
 .env
 logs/*.json
 logs/*.log
+logs/*.db
+logs/*.json
 transaction.json
 failed.json
 unipin_api_log.txt
