@@ -1,0 +1,6 @@
+{
+  "start_command": "python unpicctest1.py",
+  "install_command": "",
+  "skip_install": false,
+  "open_console": false
+}
