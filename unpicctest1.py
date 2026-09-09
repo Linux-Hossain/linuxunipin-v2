@@ -20,6 +20,45 @@ PROXY_POOL_SG = [
 PROXY_CYCLE = itertools.cycle(PROXY_POOL_SG)
 PROXY_LOCK = threading.Lock()
 
+SESSION_POOL = []
+SESSION_POOL_LOCK = threading.Lock()
+SESSION_POOL_TARGET_SIZE = 3
+
+def background_session_warmer():
+    """Background daemon thread to maintain pre-warmed curl_cffi sessions."""
+    while True:
+        try:
+            with SESSION_POOL_LOCK:
+                current_size = len(SESSION_POOL)
+            if current_size < SESSION_POOL_TARGET_SIZE:
+                s = create_garena_session()
+                with SESSION_POOL_LOCK:
+                    SESSION_POOL.append(s)
+            time.sleep(0.5)
+        except Exception:
+            time.sleep(2)
+
+def get_warmed_session():
+    """Fetch a pre-warmed session instantly from pool or create fallback."""
+    with SESSION_POOL_LOCK:
+        if SESSION_POOL:
+            return SESSION_POOL.pop(0)
+    return create_garena_session()
+
+def clone_session(base_session):
+    """Clone cookies and proxies into a fresh curl_cffi session for thread isolation."""
+    s = requests.Session(impersonate="chrome120")
+    if hasattr(base_session, "proxies") and base_session.proxies:
+        s.proxies = dict(base_session.proxies)
+    if hasattr(base_session, "cookies") and base_session.cookies:
+        for k, v in base_session.cookies.items():
+            s.cookies.set(k, v)
+    return s
+
+# Start background session warmer daemon thread
+warmer_thread = threading.Thread(target=background_session_warmer, daemon=True)
+warmer_thread.start()
+
 def create_garena_session():
     s = requests.Session(impersonate="chrome120")
     if os.getenv('WEBSHARE_ENABLED', 'true').lower() == 'true':
@@ -341,7 +380,6 @@ def select_denomination_unipin(session, unipin_url, denomination_data):
             r'<div[^>]*class="[^"]*error[^"]*"[^>]*>([^<]+)</div>',
             r'<p[^>]*class="[^"]*error[^"]*"[^>]*>([^<]+)</p>',
             r'validation.*error',
-            r'csrf.*token',
             r'invalid.*token',
         ]
         for pattern in error_indicators:
@@ -687,6 +725,7 @@ def run_unipin_flow(
     denomination_index: int | None = None,
     cookies: str | dict | None = None,
     voucher_code: str | None = None,
+    session: requests.Session | None = None,
 ):
     """
     Programmatic version of the main flow, suitable for API use.
@@ -694,7 +733,8 @@ def run_unipin_flow(
     Returns a dict shaped like unipin.py:
       {"success": bool, "result": {...}}
     """
-    session = requests.Session()
+    if session is None:
+        session = get_warmed_session()
 
     # 1) Login (optionally with cookies like the old script)
     effective_cookies = cookies if cookies is not None else DEFAULT_COOKIES
@@ -760,7 +800,7 @@ def run_unipin_flow(
     unipin_url = pay_data["init"]["url"]
 
     # 3) Fetch UniPin denominations
-    unipin_session = requests.Session()
+    unipin_session = requests.Session(impersonate="chrome120")
     up_resp = unipin_session.get(
         unipin_url,
         headers={
@@ -1018,7 +1058,7 @@ def process_multi_vouchers(uid: str, voucher_codes_raw: str, cookies: str | None
         return {"success": False, "error": "No valid voucher codes provided"}
 
     if len(codes) == 1:
-        single_res = run_unipin_flow(login_id=uid.strip(), voucher_code=codes[0], cookies=cookies)
+        single_res = run_unipin_flow(login_id=uid.strip(), voucher_code=codes[0], cookies=cookies, session=get_warmed_session())
         return single_res
 
     results = []
@@ -1028,7 +1068,8 @@ def process_multi_vouchers(uid: str, voucher_codes_raw: str, cookies: str | None
                 run_unipin_flow,
                 login_id=uid.strip(),
                 voucher_code=code,
-                cookies=cookies
+                cookies=cookies,
+                session=get_warmed_session()
             ): code for code in codes
         }
         for future in as_completed(future_to_code):
@@ -1164,9 +1205,10 @@ def get_key_status_info(api_key: str | None) -> dict:
 LOG_FILE_PATH = os.path.join(os.path.dirname(__file__), "api_requests.log")
 LOG_LOCK = threading.Lock()
 
-def write_api_log(log_entry: str):
+def write_api_log(log_entry: str, is_end_of_pair: bool = False):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    formatted = f"[{timestamp}] {log_entry}\n"
+    suffix = "\n\n" if is_end_of_pair else "\n"
+    formatted = f"[{timestamp}] {log_entry}{suffix}"
     try:
         print(formatted.strip())
     except Exception:
@@ -1290,6 +1332,7 @@ def create_app():
         api_key: str | None = Query(None),
         key: str | None = Query(None),
     ):
+        start_time = time.time()
         target_uid, target_code, target_key, order_id, cookies = await parse_request_params(
             request, uid, playerid, code, redeem_code, vouchers, api_key, key
         )
@@ -1370,15 +1413,16 @@ def create_app():
         amount_str = item_names[0] if item_names else "Topup"
         api_url = str(request.url).split("?")[0]
 
+        duration = time.time() - start_time
         if is_batch:
             call_log = f"CALL_BATCH url={api_url} uid={target_uid} amount={amount_str} codes={target_code}"
-            resp_log = f"RESP_BATCH status=200 body={json.dumps(response_payload, ensure_ascii=False)}"
+            resp_log = f"RESP_BATCH status=200 duration={duration:.2f}s body={json.dumps(response_payload, ensure_ascii=False)}"
         else:
             call_log = f"CALL_SINGLE url={api_url} uid={target_uid} amount={amount_str} code={target_code}"
-            resp_log = f"RESP_SINGLE status=200 body={json.dumps(response_payload, ensure_ascii=False)}"
+            resp_log = f"RESP_SINGLE status=200 duration={duration:.2f}s body={json.dumps(response_payload, ensure_ascii=False)}"
 
-        write_api_log(call_log)
-        write_api_log(resp_log)
+        write_api_log(call_log, is_end_of_pair=False)
+        write_api_log(resp_log, is_end_of_pair=True)
         return JSONResponse(content=response_payload, status_code=200)
 
     @app.api_route("/credits", methods=["GET", "POST"])
